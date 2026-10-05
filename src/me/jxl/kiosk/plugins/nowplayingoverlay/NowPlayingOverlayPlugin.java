@@ -46,6 +46,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.time.LocalTime;
+import java.time.format.DateTimeParseException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -104,6 +106,11 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     private boolean cameraTestMode = false;
     private boolean showOnKioskScreensaver = true;
     private boolean showOnFotoo = true;
+    private String visibilityEntity = "";
+    private String visibilityCondition = "Always";
+    private String visibilityValue = "";
+    private String visibilityState = "";
+    private boolean visibilityPollPending;
     private boolean kioskScreensaverActive = false;
     private String kioskScreensaverView = "";
 
@@ -316,6 +323,11 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         Object idValue = payload.get("entityId");
         String entityId = idValue == null ? event.substring("ks.ha.entity.".length()) : String.valueOf(idValue);
         String state = payload.get("state") == null ? null : String.valueOf(payload.get("state"));
+
+        if (!visibilityEntity.isEmpty() && entityId.equals(visibilityEntity)) {
+            visibilityState = state == null ? "" : state;
+            main.post(this::updatePresentation);
+        }
         Object attrsValue = payload.get("attributes");
         Map<?, ?> attrs = attrsValue instanceof Map ? (Map<?, ?>) attrsValue : Collections.emptyMap();
 
@@ -502,6 +514,9 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         String nextDoorbell = stringSetting(values, "doorbellEntity");
         String nextDoorbell2 = stringSetting(values, "doorbellEntity2");
         String nextCamera = stringSetting(values, "doorbellCameraEntity");
+        String nextVisibility = stringSetting(values, "visibilityEntity");
+        String nextVisibilityCondition = stringSetting(values, "visibilityCondition");
+        String nextVisibilityValue = stringSetting(values, "visibilityValue");
 
         Set<String> wanted = new HashSet<>();
         if (!nextNow.isEmpty()) wanted.add(nextNow);
@@ -510,6 +525,11 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         if (!nextDoorbell.isEmpty()) wanted.add(nextDoorbell);
         if (!nextDoorbell2.isEmpty()) wanted.add(nextDoorbell2);
         if (!nextCamera.isEmpty()) wanted.add(nextCamera);
+        if (!nextVisibility.isEmpty() &&
+                !"Always".equals(nextVisibilityCondition) &&
+                !"Time between".equals(nextVisibilityCondition)) {
+            wanted.add(nextVisibility);
+        }
 
         for (String old : new HashSet<>(subscribedEntities)) {
             if (!wanted.contains(old)) {
@@ -527,6 +547,16 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         doorbellEntity = nextDoorbell;
         doorbellEntity2 = nextDoorbell2;
         doorbellCameraEntity = nextCamera;
+        visibilityEntity = nextVisibility;
+        visibilityCondition = nextVisibilityCondition.isEmpty()
+                ? "Always" : nextVisibilityCondition;
+        visibilityValue = nextVisibilityValue;
+        visibilityState = "";
+        if (!visibilityEntity.isEmpty() &&
+                !"Always".equals(visibilityCondition) &&
+                !"Time between".equals(visibilityCondition)) {
+            pollVisibilityEntity();
+        }
         showPaused = Boolean.TRUE.equals(values.get("showPaused"));
         String npPosition = stringSetting(values, "nowPlayingPosition");
         nowPlayingPosition = "Top".equals(npPosition) || "Center".equals(npPosition)
@@ -610,7 +640,94 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     }
 
     private boolean overlayActive() {
-        return (showOnFotoo && fotooActive()) || kioskScreensaverActiveForOverlay();
+        boolean surface = (showOnFotoo && fotooActive()) || kioskScreensaverActiveForOverlay();
+        return surface && (forceOverlayPreview || visibilityAllowed());
+    }
+
+    private boolean visibilityAllowed() {
+        String condition = visibilityCondition == null ? "Always" : visibilityCondition;
+        if (condition.isEmpty() || "Always".equals(condition)) return true;
+        String value = visibilityValue == null ? "" : visibilityValue.trim();
+        if ("Time between".equals(condition)) return timeBetween(value);
+        if (visibilityEntity == null || visibilityEntity.isEmpty()) return true;
+
+        String state = visibilityState == null ? "" : visibilityState.trim();
+        if ("Active".equals(condition)) return activeState(state);
+        if ("Inactive".equals(condition)) return !activeState(state);
+        if ("State equals".equals(condition)) return state.equalsIgnoreCase(value);
+        if ("State not equals".equals(condition)) return !state.equalsIgnoreCase(value);
+
+        Double number = parseVisibilityNumber(state);
+        if (number == null) return false;
+        if ("Numeric above".equals(condition)) {
+            Double threshold = parseVisibilityNumber(value);
+            return threshold != null && number > threshold;
+        }
+        if ("Numeric below".equals(condition)) {
+            Double threshold = parseVisibilityNumber(value);
+            return threshold != null && number < threshold;
+        }
+        if ("Numeric between".equals(condition)) {
+            double[] bounds = parseVisibilityRange(value);
+            return bounds != null && number >= Math.min(bounds[0], bounds[1]) &&
+                    number <= Math.max(bounds[0], bounds[1]);
+        }
+        return true;
+    }
+
+    private static boolean activeState(String state) {
+        String s = state == null ? "" : state.trim().toLowerCase(java.util.Locale.ROOT);
+        return "on".equals(s) || "true".equals(s) || "home".equals(s) ||
+                "playing".equals(s) || "open".equals(s) || "detected".equals(s) ||
+                "occupied".equals(s) || "present".equals(s);
+    }
+
+    private static Double parseVisibilityNumber(String value) {
+        try {
+            return Double.parseDouble(value.trim().replace(',', '.'));
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static double[] parseVisibilityRange(String value) {
+        if (value == null) return null;
+        String[] parts = value.trim().split("\\.\\.");
+        if (parts.length != 2) return null;
+        Double a = parseVisibilityNumber(parts[0]);
+        Double b = parseVisibilityNumber(parts[1]);
+        return a == null || b == null ? null : new double[] {a, b};
+    }
+
+    private static boolean timeBetween(String value) {
+        if (value == null) return true;
+        String[] parts = value.trim().split("\\s*-\\s*");
+        if (parts.length != 2) return true;
+        try {
+            LocalTime from = LocalTime.parse(parts[0].trim());
+            LocalTime until = LocalTime.parse(parts[1].trim());
+            LocalTime now = LocalTime.now();
+            if (from.equals(until)) return true;
+            if (from.isBefore(until)) return !now.isBefore(from) && now.isBefore(until);
+            return !now.isBefore(from) || now.isBefore(until);
+        } catch (DateTimeParseException ignored) {
+            return true;
+        }
+    }
+
+    private void pollVisibilityEntity() {
+        if (host == null || visibilityEntity.isEmpty() || visibilityPollPending) return;
+        visibilityPollPending = true;
+        String entity = visibilityEntity;
+        Map<String, Object> args = new HashMap<>();
+        args.put("entityId", entity);
+        host.executeCommand("getHaEntityState", args, (ok, data, error) -> {
+            visibilityPollPending = false;
+            if (!ok || !(data instanceof Map) || !entity.equals(visibilityEntity)) return;
+            Object state = ((Map<?, ?>) data).get("state");
+            visibilityState = state == null ? "" : String.valueOf(state);
+            main.post(this::updatePresentation);
+        });
     }
 
     /**
