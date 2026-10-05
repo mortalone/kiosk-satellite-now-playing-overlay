@@ -29,6 +29,7 @@ import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import io.nayuki.qrcodegen.QrCode;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -159,6 +160,19 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     private final LruCache<String, Bitmap> mediaImageCache = new LruCache<>(8);
     private static final String PARTY_PREFS = "now_playing_presentation";
     private static final String PARTY_EVENT = "me.jxl.kiosk.plugins.PARTY_PRESENTATION_CHANGED";
+    private BroadcastReceiver partyAudioReceiver;
+    private String partyEffect = "off";
+    private boolean partyGuestsFollow = true;
+    private boolean partyQueueVisible = true;
+    private boolean partyGuestPending;
+    private boolean partyGuestChangePending;
+    private long partyGuestLastPoll;
+    private String partyGuestUrl = "";
+    private String partyGuestStatus = "";
+    private String partyGuestText = "Scan og tilføj musik til køen";
+    private Bitmap partyQr;
+    private long partyGuestLastSuccess;
+    private volatile long partyGuestGeneration;
     private boolean partyCompact;
     private boolean partyFullscreen;
     private FrameLayout partyRoot;
@@ -195,6 +209,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
                 pollPartyQueue();
             } else if (directMusicAssistantAvailable()) pollMusicAssistantQueue();
             if (partyFullscreen) {
+                pollPartyGuests();
                 if (SystemClock.elapsedRealtime() - partyLastRenew > 10000) {
                     partyLastRenew = SystemClock.elapsedRealtime();
                     context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit()
@@ -270,6 +285,9 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         this.windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         SharedPreferences presentation = context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE);
         partyCompact = presentation.getBoolean("compact", false);
+        partyEffect = PartySignal.effect(presentation.getString("effect", "off"));
+        partyGuestsFollow = presentation.getBoolean("guests_follow", true);
+        partyQueueVisible = presentation.getBoolean("queue_visible", true);
         presentation.edit().putBoolean("party_fullscreen", false).apply();
         context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
         if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(context)) {
@@ -284,6 +302,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         });
 
         registerDreamReceiver();
+        registerPartyAudioReceiver();
         registerActivityLifecycle();
         currentActivity = findResumedActivity();
         main.post(() -> {
@@ -325,6 +344,16 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
                 hideNowPlaying();
                 updatePresentation();
             });
+        } else if (command.startsWith("partyEffect")) {
+            final String effect = command.substring("partyEffect".length()).toLowerCase(java.util.Locale.ROOT);
+            if (!effect.equals(PartySignal.effect(effect))) throw new IllegalArgumentException("Unknown effect");
+            main.post(() -> setPartyEffect(effect));
+        } else if ("partyGuestsFollow".equals(command) || "partyGuestsHide".equals(command)) {
+            main.post(() -> setPartyGuests("partyGuestsFollow".equals(command)));
+        } else if ("partyGuestEnable".equals(command) || "partyGuestDisable".equals(command)) {
+            main.post(() -> changePartyGuestAccess("partyGuestEnable".equals(command)));
+        } else if ("partyQueueShow".equals(command) || "partyQueueHide".equals(command)) {
+            main.post(() -> setPartyQueue("partyQueueShow".equals(command)));
         } else if ("partyFullscreen".equals(command)) {
             main.post(this::openPartyFullscreen);
         } else if ("partyOff".equals(command)) {
@@ -425,6 +454,10 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
 
     @Override
     public synchronized void stop() {
+        if (context != null && partyAudioReceiver != null) {
+            try { context.unregisterReceiver(partyAudioReceiver); } catch (Throwable ignored) {}
+        }
+        partyAudioReceiver = null;
         if (context != null && dreamReceiver != null) {
             try { context.unregisterReceiver(dreamReceiver); } catch (Throwable ignored) {}
         }
@@ -685,6 +718,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             // the Now Playing window whenever settings are saved.
             if (nowPlayingView != null) hideNowPlaying();
             partyGeneration++;
+            clearPartyGuests();
             partyModel = null;
             partyTarget = "";
             partyLastSuccess = 0;
@@ -1022,6 +1056,8 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         if (context == null || host == null) return;
         removePartyView();
         partyFullscreen = true;
+        partyGuestLastPoll = 0;
+        clearPartyGuests();
         forceOverlayPreview = false;
         main.removeCallbacks(forcePreviewTimeoutTask);
         context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE)
@@ -1041,6 +1077,186 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         updatePresentation();
     }
 
+    private void registerPartyAudioReceiver() {
+        partyAudioReceiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context ignored, Intent intent) {
+                if (!partyFullscreen || partyView == null || "off".equals(partyEffect)) return;
+                long age = SystemClock.elapsedRealtime() - intent.getLongExtra("at", 0);
+                if (age < 0 || age > 1000) return;
+                partyView.acceptAudio(intent.getFloatArrayExtra("bands"), intent.getFloatArrayExtra("waveform"),
+                        intent.getIntExtra("fps", 20), intent.getBooleanExtra("demo", false));
+            }
+        };
+        IntentFilter filter = new IntentFilter("me.jxl.kiosk.plugins.PARTY_AUDIO_FRAME");
+        if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(partyAudioReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        else context.registerReceiver(partyAudioReceiver, filter);
+    }
+
+    private void setPartyEffect(String effect) {
+        partyEffect = PartySignal.effect(effect);
+        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putString("effect", partyEffect).apply();
+        if (partyView != null) partyView.setPresentation(partyEffect, partyQueueVisible);
+        context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
+    }
+
+    private void setPartyGuests(boolean follow) {
+        partyGuestsFollow = follow;
+        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("guests_follow", follow).apply();
+        clearPartyGuests(); partyGuestLastPoll = 0;
+        updateParty();
+        if (follow && partyFullscreen) pollPartyGuests();
+    }
+
+    private void setPartyQueue(boolean visible) {
+        partyQueueVisible = visible;
+        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("queue_visible", visible).apply();
+        if (partyView != null) partyView.setPresentation(partyEffect, partyQueueVisible);
+    }
+
+    private void showPartyMenu(View anchor) {
+        android.widget.PopupMenu menu = new android.widget.PopupMenu(anchor.getContext(), anchor);
+        String[] ids = {"off", "spectrum", "mirror", "radial", "wave", "particles", "tunnel"};
+        String[] names = {"Ingen visualisering", "Neon Spectrum", "Mirror Spectrum", "Radial Pulse", "Waveform", "Star Particles", "Neon Tunnel"};
+        for (int i = 0; i < ids.length; i++) {
+            final String effect = ids[i];
+            menu.getMenu().add(1, i + 1, i, names[i]).setCheckable(true).setChecked(effect.equals(partyEffect))
+                    .setOnMenuItemClickListener(item -> { setPartyEffect(effect); return true; });
+        }
+        menu.getMenu().setGroupCheckable(1, true, true);
+        menu.getMenu().add("Vis gæste-QR fra Music Assistant").setCheckable(true).setChecked(partyGuestsFollow)
+                .setOnMenuItemClickListener(item -> { setPartyGuests(!partyGuestsFollow); return true; });
+        menu.getMenu().add("Aktivér gæsteadgang i Music Assistant")
+                .setOnMenuItemClickListener(item -> { changePartyGuestAccess(true); return true; });
+        menu.getMenu().add("Deaktivér gæsteadgang i Music Assistant")
+                .setOnMenuItemClickListener(item -> { changePartyGuestAccess(false); return true; });
+        menu.getMenu().add("Vis hele køen").setCheckable(true).setChecked(partyQueueVisible)
+                .setOnMenuItemClickListener(item -> { setPartyQueue(!partyQueueVisible); return true; });
+        menu.show();
+    }
+
+    private void clearPartyGuests() {
+        partyGuestGeneration++;
+        partyGuestUrl = ""; partyQr = null; partyGuestLastSuccess = 0;
+        partyGuestStatus = "";
+        if (partyView != null) partyView.setGuests(null, partyGuestText, "");
+    }
+
+    private void changePartyGuestAccess(boolean enabled) {
+        if (partyGuestChangePending || io == null || context == null) return;
+        readKioskMusicAssistantConfig();
+        final String queue = attr(mediaAttributes, "active_queue", "");
+        if (queue.isEmpty() || maBaseUrl.isEmpty() || maToken.isEmpty()) {
+            host.status("Vælg MA-højttalergruppe og tilslut Music Assistant først.", true); return;
+        }
+        final String base = maBaseUrl.trim().replaceFirst("^ws:", "http:").replaceFirst("^wss:", "https:").replaceAll("/+$", "");
+        final String token = maToken;
+        final long generation = partyGuestGeneration;
+        partyGuestChangePending = true;
+        partyGuestStatus = "Opdaterer gæsteadgang…";
+        updateParty();
+        io.execute(() -> {
+            boolean changed = false;
+            String message = "Kunne ikke ændre gæsteadgang. MA-tokenet skal have adgang til Party-indstillinger.";
+            try {
+                JSONObject filter = new JSONObject().put("provider_domain", "party").put("include_values", true);
+                Object response = partyRequest(base, token, "config/providers", filter);
+                if (!(response instanceof JSONArray)) throw new java.io.IOException("Party settings unavailable");
+                String instance = PartyGuestConfig.matchingInstance(response instanceof JSONArray ? (JSONArray) response : null, queue);
+                if (instance.isEmpty()) {
+                    message = "Vælg den samme eksplicitte højttalergruppe som Party Player i Music Assistant først.";
+                } else if (generation == partyGuestGeneration && queue.equals(attr(mediaAttributes, "active_queue", ""))) {
+                    JSONObject args = new JSONObject().put("provider_domain", "party").put("instance_id", instance)
+                            .put("values", new JSONObject().put("enable_guest_access", enabled));
+                    Object saved = partyRequest(base, token, "config/providers/save", args);
+                    changed = saved instanceof JSONObject && instance.equals(((JSONObject) saved).optString("instance_id", ""));
+                }
+            } catch (Throwable ignored) {}
+            final boolean success = changed;
+            final String error = message;
+            main.post(() -> {
+                partyGuestChangePending = false;
+                if (host == null) return;
+                if (success) {
+                    clearPartyGuests(); partyGuestLastPoll = 0;
+                    if (enabled) {
+                        partyGuestsFollow = true;
+                        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("guests_follow", true).apply();
+                    }
+                    host.status(enabled ? "MA-gæsteadgang aktiveret." : "MA-gæsteadgang deaktiveret.", false);
+                    pollPartyGuests();
+                } else { partyGuestStatus = error; host.status(error, true); }
+                updateParty();
+            });
+        });
+    }
+
+    private void pollPartyGuests() {
+        if (!partyFullscreen || !partyGuestsFollow || io == null || context == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (partyGuestLastSuccess > 0 && now - partyGuestLastSuccess > 12000) {
+            partyQr = null; partyGuestUrl = "";
+            partyGuestStatus = "Gæsteadgang kunne ikke bekræftes";
+            updateParty();
+        }
+        if (partyGuestPending || now - partyGuestLastPoll < 5000) return;
+        partyGuestLastPoll = now;
+        readKioskMusicAssistantConfig();
+        final String queue = attr(mediaAttributes, "active_queue", "");
+        if (queue.isEmpty() || maBaseUrl.isEmpty() || maToken.isEmpty()) return;
+        final String base = maBaseUrl.trim().replaceFirst("^ws:", "http:").replaceFirst("^wss:", "https:").replaceAll("/+$", "");
+        final String token = maToken;
+        final long generation = partyGuestGeneration;
+        final String previousUrl = partyGuestUrl;
+        final Bitmap previousQr = partyQr;
+        partyGuestPending = true;
+        io.execute(() -> {
+            String url = "", message = "Aktivér Party-plugin og gæsteadgang i Music Assistant";
+            String caption = "Scan og tilføj musik til køen";
+            Bitmap qr = null;
+            try {
+                Object player = partyRequest(base, token, "party/player", new JSONObject());
+                if (PartyGuestLink.matches(queue, player)) {
+                    Object link = partyRequest(base, token, "party/url", new JSONObject());
+                    url = link instanceof String ? PartyGuestLink.validated((String) link, base) : "";
+                    if (!url.isEmpty()) {
+                        try {
+                            Object config = partyRequest(base, token, "party/config", new JSONObject());
+                            if (config instanceof JSONObject) {
+                                String value = ((JSONObject) config).optString("qr_text", "");
+                                if (!value.isEmpty() && !"null".equals(value)) caption = value.substring(0, Math.min(120, value.length()));
+                            }
+                        } catch (Throwable ignored) {}
+                        qr = url.equals(previousUrl) && previousQr != null ? previousQr : partyQrBitmap(url);
+                        message = qr == null ? "Gæste-QR kunne ikke dannes" : "";
+                    }
+                } else if (player instanceof String && !((String) player).isEmpty()) {
+                    message = "Vælg samme højttalergruppe som Party Player i Music Assistant";
+                }
+            } catch (Throwable ignored) {}
+            final String join = url, status = message, text = caption;
+            final Bitmap symbol = qr;
+            main.post(() -> {
+                partyGuestPending = false;
+                if (host == null || !partyFullscreen || !partyGuestsFollow || generation != partyGuestGeneration ||
+                        !queue.equals(attr(mediaAttributes, "active_queue", ""))) return;
+                partyGuestUrl = join; partyQr = symbol; partyGuestStatus = status; partyGuestText = text;
+                partyGuestLastSuccess = SystemClock.elapsedRealtime();
+                updateParty();
+            });
+        });
+    }
+
+    private Bitmap partyQrBitmap(String url) {
+        try {
+            QrCode qr = QrCode.encodeText(url, QrCode.Ecc.MEDIUM);
+            int scale = 6, side = (qr.size + 8) * scale;
+            int[] pixels = new int[side * side];
+            for (int y = 0; y < side; y++) for (int x = 0; x < side; x++)
+                pixels[y * side + x] = qr.getModule(x / scale - 4, y / scale - 4) ? Color.BLACK : Color.WHITE;
+            return Bitmap.createBitmap(pixels, side, side, Bitmap.Config.ARGB_8888);
+        } catch (Throwable ignored) { return null; }
+    }
+
     private void closePartyFullscreen() {
         boolean wasFullscreen = partyFullscreen;
         partyFullscreen = false;
@@ -1050,6 +1266,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             if (wasFullscreen) context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
         }
         if (wasFullscreen) removePartyView();
+        clearPartyGuests();
     }
 
     private void partyHostCommand(String command) {
@@ -1069,6 +1286,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         root.setClickable(partyFullscreen);
         root.setKeepScreenOn(partyFullscreen);
         partyView = new PartyView(context, partyFullscreen);
+        partyView.setPresentation(partyEffect, partyQueueVisible);
         root.addView(partyView, new FrameLayout.LayoutParams(-1, -1));
         int width, height, gravity, offset;
         if (partyFullscreen) {
@@ -1080,6 +1298,14 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             cp.topMargin = dp(10); cp.rightMargin = dp(10);
             root.addView(close, cp);
             close.setOnClickListener(v -> { closePartyFullscreen(); updatePresentation(); });
+            TextView menu = textView(24, true, Color.WHITE);
+            menu.setText("⋯"); menu.setGravity(Gravity.CENTER);
+            menu.setContentDescription("Party-indstillinger");
+            menu.setBackground(cardBackground(0x99353539, 24));
+            FrameLayout.LayoutParams mp = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM | Gravity.RIGHT);
+            mp.bottomMargin = dp(10); mp.rightMargin = dp(10);
+            root.addView(menu, mp);
+            menu.setOnClickListener(v -> showPartyMenu(menu));
             width = -1; height = -1; gravity = Gravity.TOP | Gravity.LEFT; offset = 0;
         } else {
             int screenWidth = context.getResources().getDisplayMetrics().widthPixels;
@@ -1111,6 +1337,8 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         }
         ensurePartyView();
         if (partyView == null) return;
+        partyView.setGuests(partyFullscreen && partyGuestsFollow ? partyQr : null,
+                partyGuestText, partyFullscreen && partyGuestsFollow ? partyGuestStatus : "");
         if (partyModel == null || SystemClock.elapsedRealtime() - partyLastSuccess > 8000) {
             String title = attr(mediaAttributes, "media_title", "");
             java.util.List<PartyQueueModel.Track> fallback = new java.util.ArrayList<>();
@@ -1320,6 +1548,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         mediaState = state;
         if (!Objects.equals(attr(mediaAttributes, "active_queue", ""), attr(attrs, "active_queue", ""))) {
             partyModel = null; partyLastSuccess = 0; partyTarget = ""; partyGeneration++;
+            clearPartyGuests(); partyGuestLastPoll = 0;
         }
         mediaAttributes = attrs == null ? Collections.emptyMap() : attrs;
         main.post(this::updateNowPlaying);

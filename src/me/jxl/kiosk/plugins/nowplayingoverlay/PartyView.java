@@ -30,6 +30,12 @@ final class PartyView extends View {
     private String message = "Henter afspilningskø…";
     private long anchor;
     private boolean playing;
+    private String effect = "off";
+    private boolean queueVisible = true;
+    private Bitmap guestQr;
+    private String guestText = "", guestStatus = "";
+    private final PartyEffects effects = new PartyEffects();
+    private final Runnable redraw = this::invalidate;
 
     PartyView(Context context, boolean fullscreen) {
         super(context); this.fullscreen = fullscreen;
@@ -54,6 +60,20 @@ final class PartyView extends View {
 
     void setMessage(String value) { message = value; invalidate(); }
 
+    void setPresentation(String effect, boolean queueVisible) {
+        this.effect = PartySignal.effect(effect); this.queueVisible = queueVisible;
+        removeCallbacks(redraw); invalidate();
+    }
+    void setGuests(Bitmap qr, String caption, String status) {
+        guestQr = qr; guestText = caption; guestStatus = status; invalidate();
+    }
+    void acceptAudio(float[] bands, float[] wave, int fps, boolean demo) {
+        effects.accept(bands, wave, fps, demo); invalidate();
+    }
+    @Override protected void onDetachedFromWindow() {
+        removeCallbacks(redraw); super.onDetachedFromWindow();
+    }
+
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         float density = getResources().getDisplayMetrics().density;
@@ -61,36 +81,73 @@ final class PartyView extends View {
         if (fullscreen) {
             canvas.drawColor(0xFF15171A);
             if (background != null) {
-                paint.setAlpha(130);
+                paint.setAlpha("off".equals(effect) ? 130 : 45);
                 canvas.drawBitmap(background, null, new RectF(0, 0, getWidth(), getHeight()), paint);
                 paint.setAlpha(255);
                 canvas.drawColor(0xA8000000);
             }
+            if (!"off".equals(effect)) {
+                effects.draw(canvas, getWidth(), getHeight(), effect, playing);
+                removeCallbacks(redraw);
+                postDelayed(redraw, effects.frameDelay());
+                String status = effects.status();
+                if (!status.isEmpty()) line(canvas, status, 14 * density, getHeight() - 14 * density,
+                        getWidth() - 82 * density, 12 * sp, false, 0xDDFFFFFF);
+            }
+        }
+        float areaLeft = 0, areaTop = 0, areaWidth = getWidth(), areaHeight = getHeight();
+        if (fullscreen && guestQr != null) {
+            boolean landscape = getWidth() >= getHeight();
+            float side = Math.min(getWidth() * (landscape ? 0.27f : 0.46f), getHeight() * (landscape ? 0.55f : 0.26f));
+            float x = landscape ? Math.max(16 * density, getWidth() * 0.035f) : (getWidth() - side) / 2;
+            float y = landscape ? (getHeight() - side) / 2 - 18 * density : 64 * density;
+            rect.set(x, y, x + side, y + side);
+            paint.setAlpha(255); paint.setFilterBitmap(false);
+            canvas.drawBitmap(guestQr, null, rect, paint);
+            paint.setFilterBitmap(true);
+            line(canvas, guestText, x, y + side + 25 * density,
+                    Math.max(side, getWidth() * 0.30f), 14 * sp, false, Color.WHITE);
+            if (landscape) {
+                areaLeft = x + side + 24 * density;
+                areaWidth = getWidth() - areaLeft;
+            } else {
+                areaTop = y + side + 44 * density;
+                areaHeight = getHeight() - areaTop;
+            }
+        } else if (fullscreen && !guestStatus.isEmpty()) {
+            line(canvas, guestStatus, 14 * density, 32 * density, getWidth() - 90 * density,
+                    13 * sp, false, 0xDDFFFFFF);
         }
         if (model.tracks.isEmpty()) {
-            line(canvas, message, 20 * density, getHeight() / 2f, getWidth() - 40 * density,
+            line(canvas, message, areaLeft + 20 * density, areaTop + areaHeight / 2f, areaWidth - 40 * density,
                     (fullscreen ? 20 : 15) * sp, false, Color.WHITE);
             return;
         }
+        java.util.List<PartyQueueModel.Track> tracks = model.tracks;
+        if (fullscreen && !queueVisible) {
+            java.util.List<PartyQueueModel.Track> selected = new java.util.ArrayList<>();
+            for (PartyQueueModel.Track track : tracks) if (track.current) selected.add(track);
+            tracks = selected;
+        }
         float margin = (fullscreen ? 32 : 4) * density;
-        float width = getWidth() - margin * 2;
+        float width = areaWidth - margin * 2;
         float neighbor = (fullscreen ? 66 : 30) * density;
-        float current = (fullscreen ? 148 : 76) * density;
+        float current = (fullscreen ? queueVisible ? 148 : 88 : 76) * density;
         float gap = 4 * density;
-        float desired = current + neighbor * (model.tracks.size() - 1) + gap * (model.tracks.size() - 1);
-        float maxHeight = getHeight() - (fullscreen ? 72 : 8) * density;
+        float desired = current + neighbor * (tracks.size() - 1) + gap * (tracks.size() - 1);
+        float maxHeight = Math.max(1, areaHeight - (fullscreen ? 72 : 8) * density);
         float scale = Math.min(1, maxHeight / Math.max(1, desired));
         neighbor *= scale; current *= scale; gap *= scale;
         float total = desired * scale;
-        float y = (getHeight() - total) / 2;
+        float y = fullscreen && !queueVisible ? areaTop + areaHeight - total - 64 * density : areaTop + (areaHeight - total) / 2;
         int currentIndex = 0;
-        for (int i = 0; i < model.tracks.size(); i++) if (model.tracks.get(i).current) currentIndex = i;
-        for (int i = 0; i < model.tracks.size(); i++) {
-            PartyQueueModel.Track track = model.tracks.get(i);
+        for (int i = 0; i < tracks.size(); i++) if (tracks.get(i).current) currentIndex = i;
+        for (int i = 0; i < tracks.size(); i++) {
+            PartyQueueModel.Track track = tracks.get(i);
             boolean active = track.current;
             float height = active ? current : neighbor;
             float inset = active ? 0 : Math.min(2, Math.abs(i - currentIndex)) * (fullscreen ? 20 : 9) * density;
-            float x = margin + inset;
+            float x = areaLeft + margin + inset;
             float cardWidth = width - inset * 2;
             int alpha = active ? 235 : Math.abs(i - currentIndex) > 1 ? 95 : 155;
             paint.setColor(Color.argb(alpha, 55, 55, 59));

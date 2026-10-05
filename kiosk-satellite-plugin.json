@@ -3,7 +3,7 @@
   "apiVersion": 1,
   "id": "now-playing-overlay",
   "name": "Now Playing Overlay",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "minAndroidSdk": 26,
   "entryClass": "me.jxl.kiosk.plugins.nowplayingoverlay.NowPlayingOverlayPlugin",
   "description": "Native Now Playing and Party queue presentation for Kiosk Satellite and Fotoo, including a compact queue overlay and a dedicated full-screen Party Mode.",
@@ -203,6 +203,58 @@
     {
       "id": "partyOff",
       "title": "Party Mode: use standard Now Playing"
+    },
+    {
+      "id": "partyEffectOff",
+      "title": "Party visualizer: None (saved)"
+    },
+    {
+      "id": "partyEffectSpectrum",
+      "title": "Party visualizer: Neon Spectrum (saved)"
+    },
+    {
+      "id": "partyEffectMirror",
+      "title": "Party visualizer: Mirror Spectrum (saved)"
+    },
+    {
+      "id": "partyEffectRadial",
+      "title": "Party visualizer: Radial Pulse (saved)"
+    },
+    {
+      "id": "partyEffectWave",
+      "title": "Party visualizer: Waveform (saved)"
+    },
+    {
+      "id": "partyEffectParticles",
+      "title": "Party visualizer: Star Particles (saved)"
+    },
+    {
+      "id": "partyEffectTunnel",
+      "title": "Party visualizer: Neon Tunnel (saved)"
+    },
+    {
+      "id": "partyGuestsFollow",
+      "title": "Party guest QR: follow Music Assistant (saved)"
+    },
+    {
+      "id": "partyGuestsHide",
+      "title": "Party guest QR: hide (saved)"
+    },
+    {
+      "id": "partyQueueShow",
+      "title": "Party layout: full queue (saved)"
+    },
+    {
+      "id": "partyQueueHide",
+      "title": "Party layout: current song only (saved)"
+    },
+    {
+      "id": "partyGuestEnable",
+      "title": "Party guests: enable access in Music Assistant"
+    },
+    {
+      "id": "partyGuestDisable",
+      "title": "Party guests: disable access in Music Assistant"
     }
   ],
   "groups": [

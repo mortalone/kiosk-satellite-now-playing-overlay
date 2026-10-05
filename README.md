@@ -42,10 +42,43 @@ current track; earlier/upcoming items are not invented. Artwork and queue
 requests are bounded. Queue requests are read only; `host.control` is used
 only to stop/postpone the screensaver and hide stock page/player presentation.
 
-Update **Spectrum Visualizer to 0.2.9** and **Quick Actions to 0.2.4** so their
+Update **Spectrum Visualizer to 0.2.10** and **Quick Actions to 0.2.5** so their
 spectrum/debug/quick-action overlays hide during full-screen Party Mode.
 Their prior choices return after closing. Compact mode does not suppress them.
 
-This is the queue display inspired by Music Assistant Party. It does not
-enable guest access or implement song requests/QR codes. Hardware verification
-is required for native view composition and the kiosk's local MA connection.
+## 0.2.2: Party guest QR and audio effects
+
+In full screen, tap **⋯** to choose Neon Spectrum, Mirror Spectrum, Radial Pulse,
+Waveform, Star Particles, Neon Tunnel or no effect. The same choices are actions,
+and the selected effect survives restarts. **Show whole queue** can be switched
+off for a small current-song card and more room for the visualization.
+
+Update Spectrum Visualizer to **0.2.10**: it supplies bounded audio frames using
+its existing source, gain and 10/20/30 FPS choices. Party does not create a second
+capture source. Keep digital / Sendspin selected for music-reactive effects.
+Animated source and microphone failure fallback are explicitly marked as demo.
+Party effects fade when audio frames are missing or playback is paused. These are
+native Canvas effects, not a MilkDrop preset runtime.
+
+Guest QR follows **Music Assistant → Settings → Plugins → Party → Enable Guest
+Access**. Select the same explicit group in MA's **Party Player** and this
+plugin's **Now Playing entity**. The native view uses MA's actual `party/url`
+join link, including Remote Access links, and confirms `party/player` matches
+the selected entity's `active_queue`. Mismatches do not display a QR. The URL is
+never written to preferences or logs, and no administrator token is in the QR.
+QR display can be hidden by action or the menu. If MA changes/disables guest
+access the QR disappears on the next check. Song requests and rate limits are
+handled by MA's own guest interface; they target the MA queue, not Spotify's
+separate live Connect queue. The screenshot is a presentation reference, not an
+implementation of lyrics, karaoke or every MA Party dashboard feature.
+
+Queue/link/audio normalization and independently decoded QR round-trip tests
+run in CI. Native rendering, scan distance, the local MA connection and Android
+audio behavior still need testing on your kiosk.
+
+MA guest access can also be enabled/disabled from the Party menu or actions.
+This writes only `enable_guest_access` on the single enabled Party instance
+whose explicit Party Player matches the selected MA queue. Auto/ambiguous or
+unmatched instances are not changed. Your MA token needs permission to read
+and update that provider configuration. Disabling access revokes guest access
+as defined by MA; hiding the QR alone does not disable guest access.

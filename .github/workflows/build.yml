@@ -37,6 +37,15 @@ jobs:
           javac --release 8 -cp /tmp/party-json.jar -d /tmp/party-test src/me/jxl/kiosk/plugins/nowplayingoverlay/PartyQueueModel.java tests/PartyQueueModelTest.java
           java -cp /tmp/party-test:/tmp/party-json.jar me.jxl.kiosk.plugins.nowplayingoverlay.PartyQueueModelTest
 
+      - name: Verify guest queue, audio frames and scannable QR codes
+        run: |
+          curl --fail --silent --show-error --location https://repo.maven.apache.org/maven2/com/google/zxing/core/3.5.3/core-3.5.3.jar -o /tmp/qr-decoder.jar
+          javac --release 8 -cp /tmp/qr-decoder.jar:/tmp/party-json.jar -d /tmp/party-test src/io/nayuki/qrcodegen/*.java src/me/jxl/kiosk/plugins/nowplayingoverlay/PartyGuestLink.java src/me/jxl/kiosk/plugins/nowplayingoverlay/PartySignal.java src/me/jxl/kiosk/plugins/nowplayingoverlay/PartyGuestConfig.java tests/PartyGuestLinkTest.java tests/PartyGuestConfigTest.java tests/PartySignalTest.java tests/PartyQrTest.java
+          java -cp /tmp/party-test me.jxl.kiosk.plugins.nowplayingoverlay.PartyGuestLinkTest
+          java -cp /tmp/party-test:/tmp/party-json.jar me.jxl.kiosk.plugins.nowplayingoverlay.PartyGuestConfigTest
+          java -cp /tmp/party-test me.jxl.kiosk.plugins.nowplayingoverlay.PartySignalTest
+          java -cp /tmp/party-test:/tmp/qr-decoder.jar me.jxl.kiosk.plugins.nowplayingoverlay.PartyQrTest
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
