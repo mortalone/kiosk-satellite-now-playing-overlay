@@ -10,9 +10,13 @@ The next song is read automatically from MA's selected queue when available, wit
 
 ## Standalone Party split
 
-Full-screen Party, visualizations, guest QR and their actions belong to the separate [Party Mode project](plugins/party-mode/README.md). Party has its own plugin ID, speaker and visibility. Now Playing yields while standalone Party is active and returns to its own visibility afterward.
+Full-screen Party, visualizations, guest QR and their actions belong to the separate [Party Mode plugin](https://github.com/mortalone/kiosk-satellite-party-mode). Party has its own plugin ID, speaker and visibility. Now Playing yields while standalone Party is active and returns to its own visibility afterward.
 
-The split is staged on `party-mode-split` until the dedicated Party repository is available. The latest stable Now Playing remains 0.2.3 during this transition. Party's prerelease in this repository is a build preview, not a Kiosk repository installation URL.
+Install Party Mode separately using:
+
+https://github.com/mortalone/kiosk-satellite-party-mode
+
+Update Now Playing to 0.2.4, Spectrum Visualizer to 0.2.11 and Quick Actions to 0.2.6. The previous full-screen actions in Now Playing are replaced by Party Mode's own actions. Enable the new plugin and select the intended MA speaker. Now Playing's current-song card and compact queue stay available.
 
 ## Build
 
@@ -20,4 +24,4 @@ The split is staged on `party-mode-split` until the dedicated Party repository i
 python3 tools/build.py --android-platform 35
 ```
 
-CI builds both projects and verifies MA queues, real QR decoding, guest-access matching, audio frame bounds and Party activation/visibility. On-device layout and live server access need kiosk verification.
+CI builds this plugin and verifies the MA queue model. Party Mode runs its own builds and guest, QR, audio and visibility tests in its separate repository. On-device layout and live server access need kiosk verification.
