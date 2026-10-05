@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "id": "now-playing-overlay",
+  "name": "Now Playing Overlay",
+  "version": "0.1.0",
+  "minAndroidSdk": 26,
+  "entryClass": "me.jxl.kiosk.plugins.nowplayingoverlay.NowPlayingOverlayPlugin",
+  "description": "Native Now Playing overlay for Kiosk Satellite screensavers and Fotoo, with stable Home Assistant artwork and Music Assistant metadata enrichment.",
+  "author": "Local Kiosk Satellite project",
+  "license": "MIT",
+  "capabilities": [
+    "overlay",
+    "host.read"
+  ],
+  "settings": [
+    {
+      "key": "overlayTarget",
+      "type": "select",
+      "title": "Show overlay on",
+      "default": "Kiosk Satellite + Fotoo",
+      "options": [
+        "Kiosk Satellite + Fotoo",
+        "Kiosk Satellite only",
+        "Fotoo only"
+      ],
+      "group": "Screensaver",
+      "description": "Choose whether Now Playing is shown on Kiosk Satellite's own screensavers, Fotoo, or both."
+    },
+    {
+      "key": "nowPlayingEntity",
+      "type": "entity",
+      "title": "Now Playing entity",
+      "default": "",
+      "group": "Now Playing",
+      "description": "Choose the Home Assistant media_player entity to follow."
+    },
+    {
+      "key": "showPaused",
+      "type": "boolean",
+      "title": "Show while paused",
+      "default": true,
+      "group": "Now Playing",
+      "description": "Keep the Now Playing card visible while playback is paused."
+    },
+    {
+      "key": "nowPlayingPosition",
+      "type": "select",
+      "title": "Position",
+      "default": "Bottom",
+      "options": [
+        "Top",
+        "Center",
+        "Bottom"
+      ],
+      "group": "Now Playing",
+      "description": "Vertical position of the Now Playing card."
+    },
+    {
+      "key": "nowPlayingOffset",
+      "type": "number",
+      "title": "Edge offset",
+      "default": 34,
+      "min": 0,
+      "max": 500,
+      "step": 1,
+      "unit": "dp",
+      "group": "Now Playing",
+      "description": "Distance from the selected top or bottom edge."
+    },
+    {
+      "key": "nowPlayingWidthPercent",
+      "type": "number",
+      "title": "Width",
+      "default": 60,
+      "min": 30,
+      "max": 100,
+      "step": 5,
+      "unit": "%",
+      "group": "Now Playing",
+      "description": "Width of the Now Playing card as a percentage of the screen."
+    },
+    {
+      "key": "nowPlayingOpacity",
+      "type": "number",
+      "title": "Opacity",
+      "default": 90,
+      "min": 10,
+      "max": 100,
+      "step": 5,
+      "unit": "%",
+      "group": "Now Playing",
+      "description": "Opacity of the Now Playing card."
+    },
+    {
+      "key": "showProgress",
+      "type": "boolean",
+      "title": "Show progress bar",
+      "default": true,
+      "group": "Now Playing",
+      "description": "Show playback position when duration and position are available."
+    },
+    {
+      "key": "timeLabels",
+      "type": "select",
+      "title": "Time labels",
+      "default": "Elapsed / remaining",
+      "options": [
+        "Elapsed / total",
+        "Elapsed / remaining",
+        "Remaining only",
+        "Off"
+      ],
+      "group": "Now Playing",
+      "description": "Choose time labels under the progress bar."
+    },
+    {
+      "key": "showPlaylist",
+      "type": "boolean",
+      "title": "Show playlist/source",
+      "default": false,
+      "group": "Now Playing",
+      "description": "Show playlist/source when available."
+    },
+    {
+      "key": "showNextTrack",
+      "type": "boolean",
+      "title": "Show next track",
+      "default": false,
+      "group": "Now Playing",
+      "description": "Show the next track when available."
+    },
+    {
+      "key": "nextTrackEntity",
+      "type": "entity",
+      "title": "Next track entity (optional)",
+      "default": "",
+      "group": "Now Playing",
+      "description": "Optional Home Assistant sensor/text entity containing the next track title."
+    }
+  ],
+  "commands": [
+    {
+      "id": "openFotoo",
+      "title": "Open Fotoo with Now Playing"
+    },
+    {
+      "id": "attachNow",
+      "title": "Attach / show Now Playing now"
+    },
+    {
+      "id": "test",
+      "title": "Show test overlay"
+    },
+    {
+      "id": "hide",
+      "title": "Hide Now Playing"
+    }
+  ],
+  "groups": [
+    {
+      "title": "Screensaver"
+    },
+    {
+      "title": "Now Playing"
+    }
+  ]
+}
