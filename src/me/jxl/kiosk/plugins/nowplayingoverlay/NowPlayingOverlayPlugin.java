@@ -1135,10 +1135,14 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     }
 
     private void clearPartyGuests() {
-        partyGuestGeneration++;
+        final long generation = ++partyGuestGeneration;
         partyGuestUrl = ""; partyQr = null; partyGuestLastSuccess = 0;
         partyGuestStatus = "";
-        if (partyView != null) partyView.setGuests(null, partyGuestText, "");
+        Runnable clear = () -> {
+            if (generation == partyGuestGeneration && partyView != null) partyView.setGuests(null, partyGuestText, "");
+        };
+        if (Looper.myLooper() == Looper.getMainLooper()) clear.run();
+        else main.post(clear);
     }
 
     private void changePartyGuestAccess(boolean enabled) {

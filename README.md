@@ -46,7 +46,7 @@ Update **Spectrum Visualizer to 0.2.10** and **Quick Actions to 0.2.5** so their
 spectrum/debug/quick-action overlays hide during full-screen Party Mode.
 Their prior choices return after closing. Compact mode does not suppress them.
 
-## 0.2.2: Party guest QR and audio effects
+## 0.2.3: Party guest QR and audio effects
 
 In full screen, tap **⋯** to choose Neon Spectrum, Mirror Spectrum, Radial Pulse,
 Waveform, Star Particles, Neon Tunnel or no effect. The same choices are actions,
