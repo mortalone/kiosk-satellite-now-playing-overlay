@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "id": "party-mode",
+  "name": "Party Mode",
+  "version": "0.1.0",
+  "minAndroidSdk": 26,
+  "entryClass": "me.jxl.kiosk.plugins.partymode.PartyModePlugin",
+  "description": "Standalone full-screen Party queue, MA guest QR and native audio visualizations, with independent visibility and HA actions.",
+  "author": "Local Kiosk Satellite project",
+  "license": "MIT",
+  "capabilities": [
+    "overlay",
+    "host.read",
+    "host.control"
+  ],
+  "settings": [
+    {
+      "key": "speakerEntity",
+      "type": "entity",
+      "title": "Speaker / højttaler",
+      "default": "",
+      "group": "Party",
+      "description": "Music Assistant HA media_player for the speaker group whose queue Party should follow."
+    },
+    {
+      "key": "startAutomatically",
+      "type": "boolean",
+      "title": "Start automatically when visibility allows",
+      "default": false,
+      "group": "Party",
+      "description": "Otherwise use Party start/stop actions. Independent of all screensavers and other plugin visibility."
+    },
+    {
+      "key": "onlyWhilePlaying",
+      "type": "boolean",
+      "title": "Only while playing",
+      "default": false,
+      "group": "Party",
+      "description": "Also gate Party on the selected speaker playback state."
+    },
+    {
+      "key": "showPaused",
+      "type": "boolean",
+      "title": "Allow while paused",
+      "default": true,
+      "group": "Party",
+      "description": "Used when Only while playing is enabled."
+    },
+    {
+      "key": "visibilityEntity",
+      "type": "entity",
+      "title": "Visibility entity (optional)",
+      "default": "",
+      "group": "Visibility",
+      "description": "Optional Home Assistant entity that controls whether this overlay is allowed to appear."
+    },
+    {
+      "key": "visibilityCondition",
+      "type": "select",
+      "title": "Visibility condition",
+      "default": "Always",
+      "options": [
+        "Always",
+        "Active",
+        "Inactive",
+        "State equals",
+        "State not equals",
+        "Numeric above",
+        "Numeric below",
+        "Numeric between",
+        "Time between"
+      ],
+      "group": "Visibility",
+      "description": "Active recognizes on, true, home, playing, open, detected, occupied and present. Time between does not need an entity."
+    },
+    {
+      "key": "visibilityValue",
+      "type": "string",
+      "title": "Visibility value",
+      "default": "",
+      "group": "Visibility",
+      "description": "Value for the condition. Examples: on, 30, 10..200, or 22:00-06:00."
+    },
+    {
+      "key": "screenControls",
+      "type": "select",
+      "title": "Screen controls",
+      "default": "All controls",
+      "options": [
+        "All controls",
+        "Close only",
+        "Hidden"
+      ],
+      "group": "Presentation",
+      "description": "All controls shows Settings and Close at the top. HA actions always work, including when screen controls are hidden."
+    },
+    {
+      "key": "effect",
+      "type": "select",
+      "title": "Visualization",
+      "default": "off",
+      "options": [
+        "off",
+        "spectrum",
+        "mirror",
+        "radial",
+        "wave",
+        "particles",
+        "tunnel"
+      ],
+      "group": "Presentation",
+      "description": "None / Neon Spectrum / Mirror Spectrum / Radial Pulse / Waveform / Star Particles / Neon Tunnel. Actions can save another choice."
+    },
+    {
+      "key": "gain",
+      "type": "number",
+      "title": "Party visualization gain",
+      "default": 3,
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "group": "Presentation",
+      "description": "Independent Party visual strength. Does not change audio volume."
+    },
+    {
+      "key": "refreshRate",
+      "type": "select",
+      "title": "Party refresh rate",
+      "default": "20 FPS",
+      "options": [
+        "10 FPS",
+        "20 FPS",
+        "30 FPS"
+      ],
+      "group": "Presentation",
+      "description": "Party rendering and audio-frame rate. Independent of the normal spectrum overlay."
+    },
+    {
+      "key": "showQueue",
+      "type": "boolean",
+      "title": "Show full queue",
+      "default": true,
+      "group": "Presentation",
+      "description": "Otherwise keep a small current-song card for more visual space."
+    },
+    {
+      "key": "showGuestQr",
+      "type": "boolean",
+      "title": "Show MA guest QR",
+      "default": true,
+      "group": "Guests",
+      "description": "Follows MA guest access for the same configured group. Hiding QR does not disable MA guest access."
+    }
+  ],
+  "commands": [
+    {
+      "id": "show",
+      "title": "Start Party Mode"
+    },
+    {
+      "id": "hide",
+      "title": "Stop Party Mode"
+    },
+    {
+      "id": "partyEffectOff",
+      "title": "Party visualizer: None (saved)"
+    },
+    {
+      "id": "partyEffectSpectrum",
+      "title": "Party visualizer: Neon Spectrum (saved)"
+    },
+    {
+      "id": "partyEffectMirror",
+      "title": "Party visualizer: Mirror Spectrum (saved)"
+    },
+    {
+      "id": "partyEffectRadial",
+      "title": "Party visualizer: Radial Pulse (saved)"
+    },
+    {
+      "id": "partyEffectWave",
+      "title": "Party visualizer: Waveform (saved)"
+    },
+    {
+      "id": "partyEffectParticles",
+      "title": "Party visualizer: Star Particles (saved)"
+    },
+    {
+      "id": "partyEffectTunnel",
+      "title": "Party visualizer: Neon Tunnel (saved)"
+    },
+    {
+      "id": "partyGuestsFollow",
+      "title": "Party guest QR: follow Music Assistant (saved)"
+    },
+    {
+      "id": "partyGuestsHide",
+      "title": "Party guest QR: hide (saved)"
+    },
+    {
+      "id": "partyQueueShow",
+      "title": "Party layout: full queue (saved)"
+    },
+    {
+      "id": "partyQueueHide",
+      "title": "Party layout: current song only (saved)"
+    },
+    {
+      "id": "partyGuestEnable",
+      "title": "Party guests: enable access in Music Assistant"
+    },
+    {
+      "id": "partyGuestDisable",
+      "title": "Party guests: disable access in Music Assistant"
+    },
+    {
+      "id": "controlsAll",
+      "title": "Screen controls: Settings and Close (saved)"
+    },
+    {
+      "id": "controlsClose",
+      "title": "Screen controls: Close only (saved)"
+    },
+    {
+      "id": "controlsHidden",
+      "title": "Screen controls: hidden (saved)"
+    }
+  ],
+  "groups": [
+    {
+      "title": "Party"
+    },
+    {
+      "title": "Visibility"
+    },
+    {
+      "title": "Presentation"
+    },
+    {
+      "title": "Guests"
+    }
+  ]
+}

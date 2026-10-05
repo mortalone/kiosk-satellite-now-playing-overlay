@@ -1,4 +1,4 @@
-package me.jxl.kiosk.plugins.nowplayingoverlay;
+package me.jxl.kiosk.plugins.partymode;
 
 import io.nayuki.qrcodegen.QrCode;
 import com.google.zxing.BinaryBitmap;

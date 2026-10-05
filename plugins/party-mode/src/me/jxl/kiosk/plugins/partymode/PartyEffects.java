@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-package me.jxl.kiosk.plugins.nowplayingoverlay;
+package me.jxl.kiosk.plugins.partymode;
 
 import android.graphics.Canvas;
 import android.graphics.Color;

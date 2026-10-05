@@ -2,7 +2,7 @@ name: Build and release Kiosk Satellite plugin
 
 on:
   push:
-    branches: [main]
+    branches: [main, party-mode-split]
   workflow_dispatch:
 
 permissions:
@@ -29,7 +29,9 @@ jobs:
           yes | "$SDKMANAGER" "platforms;android-35" >/dev/null
 
       - name: Build plugin
-        run: python3 tools/build.py --android-platform 35
+        run: |
+          python3 tools/build.py --android-platform 35
+          python3 tools/build.py --android-platform 35 --project plugins/party-mode
       - name: Verify Party queue model
         run: |
           curl --fail --silent --show-error --location https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar -o /tmp/party-json.jar
@@ -40,11 +42,11 @@ jobs:
       - name: Verify guest queue, audio frames and scannable QR codes
         run: |
           curl --fail --silent --show-error --location https://repo.maven.apache.org/maven2/com/google/zxing/core/3.5.3/core-3.5.3.jar -o /tmp/qr-decoder.jar
-          javac --release 8 -cp /tmp/qr-decoder.jar:/tmp/party-json.jar -d /tmp/party-test src/io/nayuki/qrcodegen/*.java src/me/jxl/kiosk/plugins/nowplayingoverlay/PartyGuestLink.java src/me/jxl/kiosk/plugins/nowplayingoverlay/PartySignal.java src/me/jxl/kiosk/plugins/nowplayingoverlay/PartyGuestConfig.java tests/PartyGuestLinkTest.java tests/PartyGuestConfigTest.java tests/PartySignalTest.java tests/PartyQrTest.java
-          java -cp /tmp/party-test me.jxl.kiosk.plugins.nowplayingoverlay.PartyGuestLinkTest
-          java -cp /tmp/party-test:/tmp/party-json.jar me.jxl.kiosk.plugins.nowplayingoverlay.PartyGuestConfigTest
-          java -cp /tmp/party-test me.jxl.kiosk.plugins.nowplayingoverlay.PartySignalTest
-          java -cp /tmp/party-test:/tmp/qr-decoder.jar me.jxl.kiosk.plugins.nowplayingoverlay.PartyQrTest
+          PARTY=plugins/party-mode
+          javac --release 8 -cp /tmp/qr-decoder.jar:/tmp/party-json.jar -d /tmp/party-test "$PARTY"/src/io/nayuki/qrcodegen/*.java "$PARTY"/src/me/jxl/kiosk/plugins/partymode/PartyGuestLink.java "$PARTY"/src/me/jxl/kiosk/plugins/partymode/PartySignal.java "$PARTY"/src/me/jxl/kiosk/plugins/partymode/PartyGuestConfig.java "$PARTY"/src/me/jxl/kiosk/plugins/partymode/PartyQueueModel.java "$PARTY"/src/me/jxl/kiosk/plugins/partymode/PartyActivation.java "$PARTY"/src/me/jxl/kiosk/plugins/partymode/PartyVisibility.java "$PARTY"/tests/*.java
+          for TEST in PartyQueueModelTest PartyGuestLinkTest PartyGuestConfigTest PartySignalTest PartyQrTest PartyActivationTest; do
+            java -cp /tmp/party-test:/tmp/party-json.jar:/tmp/qr-decoder.jar "me.jxl.kiosk.plugins.partymode.$TEST"
+          done
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -55,6 +57,7 @@ jobs:
             dist/*.zip.sha256
 
       - name: Create GitHub release when version is new
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -65,9 +68,19 @@ jobs:
             exit 0
           fi
           gh release create "$TAG" \
-            dist/*.zip \
-            dist/*.zip.sha256 \
+            "dist/now-playing-overlay-$VERSION.zip" \
+            "dist/now-playing-overlay-$VERSION.zip.sha256" \
             kiosk-satellite-plugin.json \
             --target "$GITHUB_SHA" \
             --title "Now Playing Overlay $VERSION" \
             --notes-file RELEASE_NOTES.md
+
+      - name: Publish standalone Party preview
+        if: github.ref == 'refs/heads/party-mode-split'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(python3 -c 'import json; print(json.load(open("plugins/party-mode/kiosk-satellite-plugin.json"))["version"])')
+          TAG="party-v$VERSION-preview"
+          if gh release view "$TAG" >/dev/null 2>&1; then exit 0; fi
+          gh release create "$TAG" "dist/party-mode-$VERSION.zip" "dist/party-mode-$VERSION.zip.sha256" plugins/party-mode/kiosk-satellite-plugin.json --target "$GITHUB_SHA" --prerelease --title "Party Mode $VERSION preview" --notes-file plugins/party-mode/RELEASE_NOTES.md

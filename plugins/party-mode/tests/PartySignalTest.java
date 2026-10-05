@@ -1,4 +1,4 @@
-package me.jxl.kiosk.plugins.nowplayingoverlay;
+package me.jxl.kiosk.plugins.partymode;
 
 public final class PartySignalTest {
     public static void main(String[] args) {

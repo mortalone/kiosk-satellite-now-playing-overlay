@@ -1,4 +1,4 @@
-package me.jxl.kiosk.plugins.nowplayingoverlay;
+package me.jxl.kiosk.plugins.partymode;
 import org.json.JSONArray;
 import org.json.JSONObject;
 

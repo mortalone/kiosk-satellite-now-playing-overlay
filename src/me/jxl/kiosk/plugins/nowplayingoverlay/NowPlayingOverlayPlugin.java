@@ -29,7 +29,6 @@ import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-import io.nayuki.qrcodegen.QrCode;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -88,7 +87,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     private final Set<String> subscribedEntities = new HashSet<>();
     private String nowPlayingEntity = "";
     private String playlistEntity = "";
-    private String nextTrackEntity = "";
     private String doorbellEntity = "";
     private String doorbellEntity2 = "";
     private String doorbellCameraEntity = "";
@@ -100,7 +98,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     private boolean showProgress = true;
     private String timeLabels = "Elapsed / remaining";
     private boolean showPlaylist = false;
-    private boolean showNextTrack = false;
     private int doorbellSeconds = 20;
     private int cameraOpacity = 100;
     private int cameraSizePercent = 90;
@@ -132,7 +129,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     private boolean nextTrackPollPending;
     private String maBaseUrl = "";
     private String maToken = "";
-    private String maPlayerId = "";
     private boolean maQueuePollPending;
     private long maLastSuccessRealtime;
     private String playlistState = "";
@@ -160,24 +156,9 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     private final LruCache<String, Bitmap> mediaImageCache = new LruCache<>(8);
     private static final String PARTY_PREFS = "now_playing_presentation";
     private static final String PARTY_EVENT = "me.jxl.kiosk.plugins.PARTY_PRESENTATION_CHANGED";
-    private BroadcastReceiver partyAudioReceiver;
-    private String partyEffect = "off";
-    private boolean partyGuestsFollow = true;
-    private boolean partyQueueVisible = true;
-    private boolean partyGuestPending;
-    private boolean partyGuestChangePending;
-    private long partyGuestLastPoll;
-    private String partyGuestUrl = "";
-    private String partyGuestStatus = "";
-    private String partyGuestText = "Scan og tilføj musik til køen";
-    private Bitmap partyQr;
-    private long partyGuestLastSuccess;
-    private volatile long partyGuestGeneration;
     private boolean partyCompact;
-    private boolean partyFullscreen;
     private FrameLayout partyRoot;
     private PartyView partyView;
-    private Activity partyActivity;
     private boolean partyPollPending;
     private long partyLastPoll;
     private long partyLastSuccess;
@@ -197,36 +178,22 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
 
     private final Runnable liveStatePollTask = new Runnable() {
         @Override public void run() {
-            if ((!overlayActive() && !partyFullscreen) || host == null) return;
+            if (!overlayActive() || host == null) return;
             // The explicitly selected Home Assistant media_player is the
             // authoritative playback state. Direct Music Assistant data may
             // enrich title/artwork/queue metadata, but must never replace the
             // selected speaker's playing/paused state with the kiosk's own MA
             // player state.
             pollMediaEntity();
-            if (partyCompact || partyFullscreen) {
+            if (partyCompact) {
                 updateParty();
                 pollPartyQueue();
             } else if (directMusicAssistantAvailable()) pollMusicAssistantQueue();
-            if (partyFullscreen) {
-                pollPartyGuests();
-                if (SystemClock.elapsedRealtime() - partyLastRenew > 10000) {
-                    partyLastRenew = SystemClock.elapsedRealtime();
-                    context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit()
-                            .putLong("party_until_ms", System.currentTimeMillis() + 30000).apply();
-                }
-                if (activeKioskActivity() != null && SystemClock.elapsedRealtime() - partyLastPostpone > 15000) {
-                    partyLastPostpone = SystemClock.elapsedRealtime();
-                    partyHostCommand("postponeScreensaver");
-                }
-                main.postDelayed(this, 1000);
-                return;
-            }
+
             if (doorbellView != null || cameraTestMode) pollCameraEntity();
             pollDoorbellTrigger(1);
             pollDoorbellTrigger(2);
             if (showPlaylist && !playlistEntity.isEmpty()) pollSimpleTextEntity(playlistEntity, true);
-            if (showNextTrack && !nextTrackEntity.isEmpty()) pollSimpleTextEntity(nextTrackEntity, false);
             main.postDelayed(this, 1000);
         }
     };
@@ -285,9 +252,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         this.windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         SharedPreferences presentation = context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE);
         partyCompact = presentation.getBoolean("compact", false);
-        partyEffect = PartySignal.effect(presentation.getString("effect", "off"));
-        partyGuestsFollow = presentation.getBoolean("guests_follow", true);
-        partyQueueVisible = presentation.getBoolean("queue_visible", true);
         presentation.edit().putBoolean("party_fullscreen", false).apply();
         context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
         if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(context)) {
@@ -302,7 +266,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         });
 
         registerDreamReceiver();
-        registerPartyAudioReceiver();
         registerActivityLifecycle();
         currentActivity = findResumedActivity();
         main.post(() -> {
@@ -335,7 +298,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             main.post(this::updatePresentation);
         } else if ("partyCompact".equals(command)) {
             main.post(() -> {
-                closePartyFullscreen();
                 partyCompact = true;
                 context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("compact", true).apply();
                 forceOverlayPreview = true;
@@ -344,21 +306,8 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
                 hideNowPlaying();
                 updatePresentation();
             });
-        } else if (command.startsWith("partyEffect")) {
-            final String effect = command.substring("partyEffect".length()).toLowerCase(java.util.Locale.ROOT);
-            if (!effect.equals(PartySignal.effect(effect))) throw new IllegalArgumentException("Unknown effect");
-            main.post(() -> setPartyEffect(effect));
-        } else if ("partyGuestsFollow".equals(command) || "partyGuestsHide".equals(command)) {
-            main.post(() -> setPartyGuests("partyGuestsFollow".equals(command)));
-        } else if ("partyGuestEnable".equals(command) || "partyGuestDisable".equals(command)) {
-            main.post(() -> changePartyGuestAccess("partyGuestEnable".equals(command)));
-        } else if ("partyQueueShow".equals(command) || "partyQueueHide".equals(command)) {
-            main.post(() -> setPartyQueue("partyQueueShow".equals(command)));
-        } else if ("partyFullscreen".equals(command)) {
-            main.post(this::openPartyFullscreen);
         } else if ("partyOff".equals(command)) {
             main.post(() -> {
-                closePartyFullscreen();
                 partyCompact = false;
                 context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("compact", false).apply();
                 removePartyView();
@@ -369,7 +318,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         } else if ("showCameraTest".equals(command)) {
             cameraTestMode = true;
             main.post(() -> {
-                closePartyFullscreen();
                 removePartyView();
                 if (overlayActive()) showDoorbell(true);
                 updatePresentation();
@@ -383,7 +331,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             });
         } else if ("hide".equals(command)) {
             main.post(() -> {
-                closePartyFullscreen();
                 removePartyView();
                 forceOverlayPreview = false;
                 manualFotoo = false;
@@ -433,10 +380,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             main.post(this::updateNowPlaying);
         }
 
-        if (!nextTrackEntity.isEmpty() && entityId.equals(nextTrackEntity)) {
-            nextTrackState = state == null ? "" : state;
-            main.post(this::updateNowPlaying);
-        }
+
 
         if (entityId.equals(doorbellCameraEntity)) {
             cameraAttributes = attrs;
@@ -454,10 +398,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
 
     @Override
     public synchronized void stop() {
-        if (context != null && partyAudioReceiver != null) {
-            try { context.unregisterReceiver(partyAudioReceiver); } catch (Throwable ignored) {}
-        }
-        partyAudioReceiver = null;
         if (context != null && dreamReceiver != null) {
             try { context.unregisterReceiver(dreamReceiver); } catch (Throwable ignored) {}
         }
@@ -504,7 +444,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
                 forceOverlayPreview = false;
                 manualFotoo = false;
                 dreaming = false;
-                closePartyFullscreen();
                 removePartyView();
                 hideDoorbellImmediate();
                 hideNowPlayingImmediate();
@@ -527,7 +466,9 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         dreamReceiver = new BroadcastReceiver() {
             @Override public void onReceive(Context ignored, Intent intent) {
                 String action = intent.getAction();
-                if (Intent.ACTION_DREAMING_STARTED.equals(action)) {
+                if (PARTY_EVENT.equals(action)) {
+                    updatePresentation();
+                } else if (Intent.ACTION_DREAMING_STARTED.equals(action)) {
                     // An exact DreamService start supersedes any temporary
                     // attach/inference state left from an update or preview.
                     dreaming = true;
@@ -548,6 +489,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             }
         };
         IntentFilter filter = new IntentFilter();
+        filter.addAction(PARTY_EVENT);
         filter.addAction(Intent.ACTION_DREAMING_STARTED);
         filter.addAction(Intent.ACTION_DREAMING_STOPPED);
         if (Build.VERSION.SDK_INT >= 33) {
@@ -571,13 +513,11 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
                 manualFotoo = false;
                 forceOverlayPreview = false;
                 main.removeCallbacks(forcePreviewTimeoutTask);
-                if (changed || partyFullscreen) updatePresentation();
+                if (changed) updatePresentation();
             }
             @Override public void onActivityPaused(Activity activity) {
                 if (currentActivity == activity) currentActivity = null;
-                if (partyFullscreen && partyActivity == activity && !activity.isChangingConfigurations()) {
-                    main.post(() -> { closePartyFullscreen(); updatePresentation(); });
-                }
+
             }
             @Override public void onActivityStopped(Activity activity) {
                 if (currentActivity == activity) currentActivity = null;
@@ -611,7 +551,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     private void applySettings(Map<String, Object> values) {
         String nextNow = stringSetting(values, "nowPlayingEntity");
         String nextPlaylistEntity = stringSetting(values, "playlistEntity");
-        String nextNextTrackEntity = stringSetting(values, "nextTrackEntity");
         String nextDoorbell = stringSetting(values, "doorbellEntity");
         String nextDoorbell2 = stringSetting(values, "doorbellEntity2");
         String nextCamera = stringSetting(values, "doorbellCameraEntity");
@@ -622,7 +561,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         Set<String> wanted = new HashSet<>();
         if (!nextNow.isEmpty()) wanted.add(nextNow);
         if (!nextPlaylistEntity.isEmpty()) wanted.add(nextPlaylistEntity);
-        if (!nextNextTrackEntity.isEmpty()) wanted.add(nextNextTrackEntity);
         if (!nextDoorbell.isEmpty()) wanted.add(nextDoorbell);
         if (!nextDoorbell2.isEmpty()) wanted.add(nextDoorbell2);
         if (!nextCamera.isEmpty()) wanted.add(nextCamera);
@@ -644,7 +582,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
 
         nowPlayingEntity = nextNow;
         playlistEntity = nextPlaylistEntity;
-        nextTrackEntity = nextNextTrackEntity;
         doorbellEntity = nextDoorbell;
         doorbellEntity2 = nextDoorbell2;
         doorbellCameraEntity = nextCamera;
@@ -674,7 +611,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         String labels = stringSetting(values, "timeLabels");
         timeLabels = labels.isEmpty() ? "Elapsed / remaining" : labels;
         showPlaylist = Boolean.TRUE.equals(values.get("showPlaylist"));
-        showNextTrack = Boolean.TRUE.equals(values.get("showNextTrack"));
         Object seconds = values.get("doorbellSeconds");
         doorbellSeconds = seconds instanceof Number ? Math.max(5, Math.min(60, ((Number) seconds).intValue())) : 20;
         Object camOpacity = values.get("cameraOpacity");
@@ -718,10 +654,10 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             // the Now Playing window whenever settings are saved.
             if (nowPlayingView != null) hideNowPlaying();
             partyGeneration++;
-            clearPartyGuests();
             partyModel = null;
             partyTarget = "";
             partyLastSuccess = 0;
+            nextTrackState = ""; maLastSuccessRealtime = 0;
             removePartyView();
             updatePresentation();
         });
@@ -747,8 +683,15 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     }
 
     private boolean overlayActive() {
+        if (standalonePartyActive()) return false;
         boolean surface = (showOnFotoo && fotooActive()) || kioskScreensaverActiveForOverlay();
         return surface && (forceOverlayPreview || visibilityAllowed());
+    }
+
+    private boolean standalonePartyActive() {
+        if (context == null) return false;
+        SharedPreferences party = context.getSharedPreferences("party_mode_presentation", Context.MODE_PRIVATE);
+        return party.getBoolean("party_fullscreen", false) && party.getLong("party_until_ms", 0) > System.currentTimeMillis();
     }
 
     private boolean visibilityAllowed() {
@@ -846,7 +789,6 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
      * overlay path that has always worked there.
      */
     private boolean preferInAppOverlay() {
-        if (partyFullscreen) return true;
         if (kioskScreensaverActiveForOverlay()) return true;
         return forceOverlayPreview && activeKioskActivity() != null;
     }
@@ -948,13 +890,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
 
     private void updatePresentation() {
         main.removeCallbacks(liveStatePollTask);
-        if (partyFullscreen) {
-            hideNowPlaying();
-            hideDoorbell();
-            ensurePartyView();
-            main.post(liveStatePollTask);
-            return;
-        }
+
         if (!overlayActive()) {
             hideDoorbell();
             hideNowPlaying();
@@ -979,7 +915,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     }
 
     private void updateNowPlaying() {
-        if (partyFullscreen || (partyCompact && overlayActive())) {
+        if (partyCompact && overlayActive()) {
             hideNowPlaying();
             updateParty();
             return;
@@ -1008,13 +944,13 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         mediaPlaylist.setText(playlist.isEmpty() ? "" : "Playlist: " + playlist);
         mediaPlaylist.setVisibility(showPlaylist && !playlist.isEmpty() ? View.VISIBLE : View.GONE);
 
-        String next = nextTrackState;
+        String next = SystemClock.elapsedRealtime() - maLastSuccessRealtime <= 8000 ? nextTrackState : "";
         if (next.isEmpty() || "unknown".equalsIgnoreCase(next) || "unavailable".equalsIgnoreCase(next)) {
             next = firstAttr(mediaAttributes,
                     "next_track", "next_title", "media_next_track", "queue_next");
         }
         mediaNext.setText(next.isEmpty() ? "" : "Næste: " + next);
-        mediaNext.setVisibility(showNextTrack && !next.isEmpty() ? View.VISIBLE : View.GONE);
+        mediaNext.setVisibility(!next.isEmpty() ? View.VISIBLE : View.GONE);
 
         updateProgress();
 
@@ -1052,297 +988,60 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         if (!mediaFetchPending) fetchMediaImage(picture);
     }
 
-    private void openPartyFullscreen() {
-        if (context == null || host == null) return;
-        removePartyView();
-        partyFullscreen = true;
-        partyGuestLastPoll = 0;
-        clearPartyGuests();
-        forceOverlayPreview = false;
-        main.removeCallbacks(forcePreviewTimeoutTask);
-        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE)
-                .edit().putBoolean("party_fullscreen", true)
-                .putLong("party_until_ms", System.currentTimeMillis() + 30000).apply();
-        context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
-        partyHostCommand("stopScreensaver");
-        partyHostCommand("hideNowPlaying");
-        partyHostCommand("hideOverlayPage");
-        if (activeKioskActivity() == null) {
-            Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
-            if (launch != null) {
-                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-                try { context.startActivity(launch); } catch (Throwable ignored) {}
-            }
-        }
-        updatePresentation();
-    }
 
-    private void registerPartyAudioReceiver() {
-        partyAudioReceiver = new BroadcastReceiver() {
-            @Override public void onReceive(Context ignored, Intent intent) {
-                if (!partyFullscreen || partyView == null || "off".equals(partyEffect)) return;
-                long age = SystemClock.elapsedRealtime() - intent.getLongExtra("at", 0);
-                if (age < 0 || age > 1000) return;
-                partyView.acceptAudio(intent.getFloatArrayExtra("bands"), intent.getFloatArrayExtra("waveform"),
-                        intent.getIntExtra("fps", 20), intent.getBooleanExtra("demo", false));
-            }
-        };
-        IntentFilter filter = new IntentFilter("me.jxl.kiosk.plugins.PARTY_AUDIO_FRAME");
-        if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(partyAudioReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        else context.registerReceiver(partyAudioReceiver, filter);
-    }
 
-    private void setPartyEffect(String effect) {
-        partyEffect = PartySignal.effect(effect);
-        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putString("effect", partyEffect).apply();
-        if (partyView != null) partyView.setPresentation(partyEffect, partyQueueVisible);
-        context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
-    }
 
-    private void setPartyGuests(boolean follow) {
-        partyGuestsFollow = follow;
-        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("guests_follow", follow).apply();
-        clearPartyGuests(); partyGuestLastPoll = 0;
-        updateParty();
-        if (follow && partyFullscreen) pollPartyGuests();
-    }
 
-    private void setPartyQueue(boolean visible) {
-        partyQueueVisible = visible;
-        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("queue_visible", visible).apply();
-        if (partyView != null) partyView.setPresentation(partyEffect, partyQueueVisible);
-    }
 
-    private void showPartyMenu(View anchor) {
-        android.widget.PopupMenu menu = new android.widget.PopupMenu(anchor.getContext(), anchor);
-        String[] ids = {"off", "spectrum", "mirror", "radial", "wave", "particles", "tunnel"};
-        String[] names = {"Ingen visualisering", "Neon Spectrum", "Mirror Spectrum", "Radial Pulse", "Waveform", "Star Particles", "Neon Tunnel"};
-        for (int i = 0; i < ids.length; i++) {
-            final String effect = ids[i];
-            menu.getMenu().add(1, i + 1, i, names[i]).setCheckable(true).setChecked(effect.equals(partyEffect))
-                    .setOnMenuItemClickListener(item -> { setPartyEffect(effect); return true; });
-        }
-        menu.getMenu().setGroupCheckable(1, true, true);
-        menu.getMenu().add("Vis gæste-QR fra Music Assistant").setCheckable(true).setChecked(partyGuestsFollow)
-                .setOnMenuItemClickListener(item -> { setPartyGuests(!partyGuestsFollow); return true; });
-        menu.getMenu().add("Aktivér gæsteadgang i Music Assistant")
-                .setOnMenuItemClickListener(item -> { changePartyGuestAccess(true); return true; });
-        menu.getMenu().add("Deaktivér gæsteadgang i Music Assistant")
-                .setOnMenuItemClickListener(item -> { changePartyGuestAccess(false); return true; });
-        menu.getMenu().add("Vis hele køen").setCheckable(true).setChecked(partyQueueVisible)
-                .setOnMenuItemClickListener(item -> { setPartyQueue(!partyQueueVisible); return true; });
-        menu.show();
-    }
 
-    private void clearPartyGuests() {
-        final long generation = ++partyGuestGeneration;
-        partyGuestUrl = ""; partyQr = null; partyGuestLastSuccess = 0;
-        partyGuestStatus = "";
-        Runnable clear = () -> {
-            if (generation == partyGuestGeneration && partyView != null) partyView.setGuests(null, partyGuestText, "");
-        };
-        if (Looper.myLooper() == Looper.getMainLooper()) clear.run();
-        else main.post(clear);
-    }
 
-    private void changePartyGuestAccess(boolean enabled) {
-        if (partyGuestChangePending || io == null || context == null) return;
-        readKioskMusicAssistantConfig();
-        final String queue = attr(mediaAttributes, "active_queue", "");
-        if (queue.isEmpty() || maBaseUrl.isEmpty() || maToken.isEmpty()) {
-            host.status("Vælg MA-højttalergruppe og tilslut Music Assistant først.", true); return;
-        }
-        final String base = maBaseUrl.trim().replaceFirst("^ws:", "http:").replaceFirst("^wss:", "https:").replaceAll("/+$", "");
-        final String token = maToken;
-        final long generation = partyGuestGeneration;
-        partyGuestChangePending = true;
-        partyGuestStatus = "Opdaterer gæsteadgang…";
-        updateParty();
-        io.execute(() -> {
-            boolean changed = false;
-            String message = "Kunne ikke ændre gæsteadgang. MA-tokenet skal have adgang til Party-indstillinger.";
-            try {
-                JSONObject filter = new JSONObject().put("provider_domain", "party").put("include_values", true);
-                Object response = partyRequest(base, token, "config/providers", filter);
-                if (!(response instanceof JSONArray)) throw new java.io.IOException("Party settings unavailable");
-                String instance = PartyGuestConfig.matchingInstance(response instanceof JSONArray ? (JSONArray) response : null, queue);
-                if (instance.isEmpty()) {
-                    message = "Vælg den samme eksplicitte højttalergruppe som Party Player i Music Assistant først.";
-                } else if (generation == partyGuestGeneration && queue.equals(attr(mediaAttributes, "active_queue", ""))) {
-                    JSONObject args = new JSONObject().put("provider_domain", "party").put("instance_id", instance)
-                            .put("values", new JSONObject().put("enable_guest_access", enabled));
-                    Object saved = partyRequest(base, token, "config/providers/save", args);
-                    changed = saved instanceof JSONObject && instance.equals(((JSONObject) saved).optString("instance_id", ""));
-                }
-            } catch (Throwable ignored) {}
-            final boolean success = changed;
-            final String error = message;
-            main.post(() -> {
-                partyGuestChangePending = false;
-                if (host == null) return;
-                if (success) {
-                    clearPartyGuests(); partyGuestLastPoll = 0;
-                    if (enabled) {
-                        partyGuestsFollow = true;
-                        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("guests_follow", true).apply();
-                    }
-                    host.status(enabled ? "MA-gæsteadgang aktiveret." : "MA-gæsteadgang deaktiveret.", false);
-                    pollPartyGuests();
-                } else { partyGuestStatus = error; host.status(error, true); }
-                updateParty();
-            });
-        });
-    }
 
-    private void pollPartyGuests() {
-        if (!partyFullscreen || !partyGuestsFollow || io == null || context == null) return;
-        long now = SystemClock.elapsedRealtime();
-        if (partyGuestLastSuccess > 0 && now - partyGuestLastSuccess > 12000) {
-            partyQr = null; partyGuestUrl = "";
-            partyGuestStatus = "Gæsteadgang kunne ikke bekræftes";
-            updateParty();
-        }
-        if (partyGuestPending || now - partyGuestLastPoll < 5000) return;
-        partyGuestLastPoll = now;
-        readKioskMusicAssistantConfig();
-        final String queue = attr(mediaAttributes, "active_queue", "");
-        if (queue.isEmpty() || maBaseUrl.isEmpty() || maToken.isEmpty()) return;
-        final String base = maBaseUrl.trim().replaceFirst("^ws:", "http:").replaceFirst("^wss:", "https:").replaceAll("/+$", "");
-        final String token = maToken;
-        final long generation = partyGuestGeneration;
-        final String previousUrl = partyGuestUrl;
-        final Bitmap previousQr = partyQr;
-        partyGuestPending = true;
-        io.execute(() -> {
-            String url = "", message = "Aktivér Party-plugin og gæsteadgang i Music Assistant";
-            String caption = "Scan og tilføj musik til køen";
-            Bitmap qr = null;
-            try {
-                Object player = partyRequest(base, token, "party/player", new JSONObject());
-                if (PartyGuestLink.matches(queue, player)) {
-                    Object link = partyRequest(base, token, "party/url", new JSONObject());
-                    url = link instanceof String ? PartyGuestLink.validated((String) link, base) : "";
-                    if (!url.isEmpty()) {
-                        try {
-                            Object config = partyRequest(base, token, "party/config", new JSONObject());
-                            if (config instanceof JSONObject) {
-                                String value = ((JSONObject) config).optString("qr_text", "");
-                                if (!value.isEmpty() && !"null".equals(value)) caption = value.substring(0, Math.min(120, value.length()));
-                            }
-                        } catch (Throwable ignored) {}
-                        qr = url.equals(previousUrl) && previousQr != null ? previousQr : partyQrBitmap(url);
-                        message = qr == null ? "Gæste-QR kunne ikke dannes" : "";
-                    }
-                } else if (player instanceof String && !((String) player).isEmpty()) {
-                    message = "Vælg samme højttalergruppe som Party Player i Music Assistant";
-                }
-            } catch (Throwable ignored) {}
-            final String join = url, status = message, text = caption;
-            final Bitmap symbol = qr;
-            main.post(() -> {
-                partyGuestPending = false;
-                if (host == null || !partyFullscreen || !partyGuestsFollow || generation != partyGuestGeneration ||
-                        !queue.equals(attr(mediaAttributes, "active_queue", ""))) return;
-                partyGuestUrl = join; partyQr = symbol; partyGuestStatus = status; partyGuestText = text;
-                partyGuestLastSuccess = SystemClock.elapsedRealtime();
-                updateParty();
-            });
-        });
-    }
 
-    private Bitmap partyQrBitmap(String url) {
-        try {
-            QrCode qr = QrCode.encodeText(url, QrCode.Ecc.MEDIUM);
-            int scale = 6, side = (qr.size + 8) * scale;
-            int[] pixels = new int[side * side];
-            for (int y = 0; y < side; y++) for (int x = 0; x < side; x++)
-                pixels[y * side + x] = qr.getModule(x / scale - 4, y / scale - 4) ? Color.BLACK : Color.WHITE;
-            return Bitmap.createBitmap(pixels, side, side, Bitmap.Config.ARGB_8888);
-        } catch (Throwable ignored) { return null; }
-    }
 
-    private void closePartyFullscreen() {
-        boolean wasFullscreen = partyFullscreen;
-        partyFullscreen = false;
-        if (context != null) {
-            context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE)
-                    .edit().putBoolean("party_fullscreen", false).putLong("party_until_ms", 0).apply();
-            if (wasFullscreen) context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
-        }
-        if (wasFullscreen) removePartyView();
-        clearPartyGuests();
-    }
 
-    private void partyHostCommand(String command) {
-        if (host == null) return;
-        try { host.executeCommand(command, Collections.emptyMap(), (ok, data, error) -> {}); }
-        catch (Throwable ignored) {}
-    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     private void ensurePartyView() {
-        if (context == null || (!partyFullscreen && !overlayActive())) return;
-        Activity activity = activeKioskActivity();
-        if (partyFullscreen && activity == null) return;
-        if (partyRoot != null && partyFullscreen && partyActivity != activity) removePartyView();
-        if (partyRoot != null) return;
+        if (context == null || !overlayActive() || partyRoot != null) return;
         FrameLayout root = new FrameLayout(context);
-        root.setTag("now-playing-overlay:party");
-        root.setClickable(partyFullscreen);
-        root.setKeepScreenOn(partyFullscreen);
-        partyView = new PartyView(context, partyFullscreen);
-        partyView.setPresentation(partyEffect, partyQueueVisible);
+        root.setTag("now-playing-overlay:compact-queue");
+        partyView = new PartyView(context, false);
         root.addView(partyView, new FrameLayout.LayoutParams(-1, -1));
-        int width, height, gravity, offset;
-        if (partyFullscreen) {
-            TextView close = textView(24, true, Color.WHITE);
-            close.setText("×"); close.setGravity(Gravity.CENTER);
-            close.setContentDescription("Afslut Party Mode");
-            close.setBackground(cardBackground(0x99353539, 24));
-            FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP | Gravity.RIGHT);
-            cp.topMargin = dp(10); cp.rightMargin = dp(10);
-            root.addView(close, cp);
-            close.setOnClickListener(v -> { closePartyFullscreen(); updatePresentation(); });
-            TextView menu = textView(24, true, Color.WHITE);
-            menu.setText("⋯"); menu.setGravity(Gravity.CENTER);
-            menu.setContentDescription("Party-indstillinger");
-            menu.setBackground(cardBackground(0x99353539, 24));
-            FrameLayout.LayoutParams mp = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM | Gravity.RIGHT);
-            mp.bottomMargin = dp(10); mp.rightMargin = dp(10);
-            root.addView(menu, mp);
-            menu.setOnClickListener(v -> showPartyMenu(menu));
-            width = -1; height = -1; gravity = Gravity.TOP | Gravity.LEFT; offset = 0;
-        } else {
-            int screenWidth = context.getResources().getDisplayMetrics().widthPixels;
-            width = Math.min(screenWidth - dp(16), Math.max(dp(260), screenWidth * nowPlayingWidthPercent / 100));
-            height = dp(216);
-            gravity = "Top".equals(nowPlayingPosition) ? Gravity.TOP | Gravity.CENTER_HORIZONTAL :
-                    "Center".equals(nowPlayingPosition) ? Gravity.CENTER : Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
-            offset = "Center".equals(nowPlayingPosition) ? 0 : dp(nowPlayingOffset);
-            root.setAlpha(nowPlayingOpacity / 100f);
-        }
+        int screenWidth = context.getResources().getDisplayMetrics().widthPixels;
+        int width = Math.min(screenWidth - dp(16), Math.max(dp(260), screenWidth * nowPlayingWidthPercent / 100));
+        int gravity = "Top".equals(nowPlayingPosition) ? Gravity.TOP | Gravity.CENTER_HORIZONTAL :
+                "Center".equals(nowPlayingPosition) ? Gravity.CENTER : Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        root.setAlpha(nowPlayingOpacity / 100f);
         try {
-            if (!addOverlayView(root, width, height, gravity, offset, false)) throw new IllegalStateException("No kiosk view");
+            if (!addOverlayView(root, width, dp(216), gravity, "Center".equals(nowPlayingPosition) ? 0 : dp(nowPlayingOffset), false)) throw new IllegalStateException("No overlay host");
             partyRoot = root;
-            partyActivity = partyFullscreen ? activity : null;
-        } catch (Throwable error) {
-            partyView = null;
-            if (host != null) host.status("Party view could not be shown.", true);
-        }
+        } catch (Throwable error) { partyView = null; if (host != null) host.status("Compact queue could not be shown.", true); }
     }
 
     private void removePartyView() {
         removeOverlayView(partyRoot);
-        partyRoot = null; partyView = null; partyActivity = null;
+        partyRoot = null; partyView = null;
     }
 
     private void updateParty() {
-        if (!partyFullscreen && (!partyCompact || !overlayActive() || (!mediaVisible() && !forceOverlayPreview))) {
+        if (!partyCompact || !overlayActive() || (!mediaVisible() && !forceOverlayPreview)) {
             removePartyView(); return;
         }
         ensurePartyView();
         if (partyView == null) return;
-        partyView.setGuests(partyFullscreen && partyGuestsFollow ? partyQr : null,
-                partyGuestText, partyFullscreen && partyGuestsFollow ? partyGuestStatus : "");
         if (partyModel == null || SystemClock.elapsedRealtime() - partyLastSuccess > 8000) {
             String title = attr(mediaAttributes, "media_title", "");
             java.util.List<PartyQueueModel.Track> fallback = new java.util.ArrayList<>();
@@ -1552,7 +1251,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         mediaState = state;
         if (!Objects.equals(attr(mediaAttributes, "active_queue", ""), attr(attrs, "active_queue", ""))) {
             partyModel = null; partyLastSuccess = 0; partyTarget = ""; partyGeneration++;
-            clearPartyGuests(); partyGuestLastPoll = 0;
+            nextTrackState = ""; maLastSuccessRealtime = 0;
         }
         mediaAttributes = attrs == null ? Collections.emptyMap() : attrs;
         main.post(this::updateNowPlaying);
@@ -1574,30 +1273,26 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
                     context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE);
             maBaseUrl = prefs.getString("flutter.ks.sendspin.ma_url", "");
             maToken = prefs.getString("flutter.ks.sendspin.ma_token", "");
-            String source = prefs.getString("flutter.ks.sendspin.player_source", "");
-            String player = prefs.getString("flutter.ks.sendspin.player", "");
-            if (player == null) player = "";
-            if (player.startsWith("ma:")) player = player.substring(3);
-            maPlayerId = "ma".equals(source) ? player.trim() : "";
         } catch (Throwable ignored) {
             maBaseUrl = "";
             maToken = "";
-            maPlayerId = "";
         }
     }
 
     private boolean directMusicAssistantAvailable() {
         return !maBaseUrl.trim().isEmpty() &&
                 !maToken.trim().isEmpty() &&
-                !maPlayerId.trim().isEmpty();
+                !attr(mediaAttributes, "active_queue", "").trim().isEmpty();
     }
 
     private void pollMusicAssistantQueue() {
         if (!directMusicAssistantAvailable() || maQueuePollPending || io == null) return;
         maQueuePollPending = true;
-        final String base = maBaseUrl.trim().replaceAll("/+$", "");
+        final String base = maBaseUrl.trim().replaceFirst("^ws:", "http:").replaceFirst("^wss:", "https:").replaceAll("/+$", "");
         final String token = maToken;
-        final String playerId = maPlayerId;
+        final String queueId = attr(mediaAttributes, "active_queue", "");
+        final String entity = nowPlayingEntity;
+        final long generation = partyGeneration;
         io.execute(() -> {
             JSONObject queue = null;
             HttpURLConnection connection = null;
@@ -1615,10 +1310,10 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
 
                 JSONObject args = new JSONObject();
-                args.put("player_id", playerId);
+                args.put("queue_id", queueId);
                 JSONObject request = new JSONObject();
                 request.put("message_id", "now-playing-overlay");
-                request.put("command", "player_queues/get_active_queue");
+                request.put("command", "player_queues/get");
                 request.put("args", args);
                 byte[] body = request.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 connection.setFixedLengthStreamingMode(body.length);
@@ -1649,7 +1344,8 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             final JSONObject resultQueue = queue;
             main.post(() -> {
                 maQueuePollPending = false;
-                if (resultQueue != null) {
+                if (host == null || generation != partyGeneration || !entity.equals(nowPlayingEntity) || !queueId.equals(attr(mediaAttributes, "active_queue", ""))) return;
+                if (resultQueue != null && queueId.equals(resultQueue.optString("queue_id", ""))) {
                     maLastSuccessRealtime = SystemClock.elapsedRealtime();
                     applyMusicAssistantQueue(resultQueue, base);
                 } else {
@@ -1726,7 +1422,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
 
         JSONObject nextItem = queue.optJSONObject("next_item");
         String nextTitle = musicAssistantItemTitle(nextItem);
-        if (!nextTitle.isEmpty()) nextTrackState = nextTitle;
+        nextTrackState = nextTitle;
 
         // Music Assistant is metadata enrichment only. The configured HA
         // media_player remains authoritative for playing/paused/idle state.
