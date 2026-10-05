@@ -1,0 +1,56 @@
+name: Build and release Kiosk Satellite plugin
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager "platforms;android-35"
+
+      - name: Build plugin
+        run: python3 tools/build.py --android-platform 35
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: now-playing-overlay
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+
+      - name: Create GitHub release when version is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(python3 -c 'import json; print(json.load(open("kiosk-satellite-plugin.json"))["version"])')
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            dist/*.zip \
+            dist/*.zip.sha256 \
+            kiosk-satellite-plugin.json \
+            --target "$GITHUB_SHA" \
+            --title "Now Playing Overlay $VERSION" \
+            --notes-file RELEASE_NOTES.md
