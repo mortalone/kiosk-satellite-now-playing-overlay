@@ -3,7 +3,7 @@
   "apiVersion": 1,
   "id": "now-playing-overlay",
   "name": "Now Playing Overlay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAndroidSdk": 26,
   "entryClass": "me.jxl.kiosk.plugins.nowplayingoverlay.NowPlayingOverlayPlugin",
   "description": "Native Now Playing overlay for Kiosk Satellite screensavers and Fotoo, with stable Home Assistant artwork and Music Assistant metadata enrichment.",
@@ -26,6 +26,41 @@
       ],
       "group": "Screensaver",
       "description": "Choose whether Now Playing is shown on Kiosk Satellite's own screensavers, Fotoo, or both."
+    },
+    {
+      "key": "visibilityEntity",
+      "type": "entity",
+      "title": "Visibility entity (optional)",
+      "default": "",
+      "group": "Visibility",
+      "description": "Optional Home Assistant entity that controls whether this overlay is allowed to appear."
+    },
+    {
+      "key": "visibilityCondition",
+      "type": "select",
+      "title": "Visibility condition",
+      "default": "Always",
+      "options": [
+        "Always",
+        "Active",
+        "Inactive",
+        "State equals",
+        "State not equals",
+        "Numeric above",
+        "Numeric below",
+        "Numeric between",
+        "Time between"
+      ],
+      "group": "Visibility",
+      "description": "Active recognizes on, true, home, playing, open, detected, occupied and present. Time between does not need an entity."
+    },
+    {
+      "key": "visibilityValue",
+      "type": "string",
+      "title": "Visibility value",
+      "default": "",
+      "group": "Visibility",
+      "description": "Value for the condition. Examples: on, 30, 10..200, or 22:00-06:00."
     },
     {
       "key": "nowPlayingEntity",
@@ -160,6 +195,9 @@
   "groups": [
     {
       "title": "Screensaver"
+    },
+    {
+      "title": "Visibility"
     },
     {
       "title": "Now Playing"
