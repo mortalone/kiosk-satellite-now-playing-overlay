@@ -1,9 +1,5 @@
-## Now Playing Overlay 0.1.0
+# Now Playing Overlay 0.2.0
 
-First standalone release extracted from the working combined Screensaver Overlay.
-
-- Stable Home Assistant cover-art handling.
-- In-Activity overlay rendering for Kiosk Satellite screensavers.
-- Fotoo system-overlay support.
-- Position and width controls.
-- Progress/time/source/next-track options.
+- Adds an optional visibility rule controlled by a Home Assistant entity or a local time window.
+- Supports Active, Inactive, exact state matching, numeric above/below/between, and overnight time ranges such as 22:00-06:00.
+- Test/preview commands bypass the visibility rule so configuration remains easy to verify.
