@@ -30,6 +30,12 @@ jobs:
 
       - name: Build plugin
         run: python3 tools/build.py --android-platform 35
+      - name: Verify Party queue model
+        run: |
+          curl --fail --silent --show-error --location https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar -o /tmp/party-json.jar
+          mkdir -p /tmp/party-test
+          javac --release 8 -cp /tmp/party-json.jar -d /tmp/party-test src/me/jxl/kiosk/plugins/nowplayingoverlay/PartyQueueModel.java tests/PartyQueueModelTest.java
+          java -cp /tmp/party-test:/tmp/party-json.jar me.jxl.kiosk.plugins.nowplayingoverlay.PartyQueueModelTest
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

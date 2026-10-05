@@ -55,6 +55,7 @@ import java.util.concurrent.Executors;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 
 import me.jxl.kiosk.plugins.KioskPlugin;
 import me.jxl.kiosk.plugins.PluginHost;
@@ -156,6 +157,23 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
     private long mediaImageRequestSerial;
     private boolean mediaFetchPending;
     private final LruCache<String, Bitmap> mediaImageCache = new LruCache<>(8);
+    private static final String PARTY_PREFS = "now_playing_presentation";
+    private static final String PARTY_EVENT = "me.jxl.kiosk.plugins.PARTY_PRESENTATION_CHANGED";
+    private boolean partyCompact;
+    private boolean partyFullscreen;
+    private FrameLayout partyRoot;
+    private PartyView partyView;
+    private Activity partyActivity;
+    private boolean partyPollPending;
+    private long partyLastPoll;
+    private long partyLastSuccess;
+    private long partyGeneration;
+    private long partyLastPostpone;
+    private long partyLastRenew;
+    private String partyTarget = "";
+    private PartyQueueModel partyModel;
+    private final Map<String, Bitmap> partyArtwork = new HashMap<>();
+    private final Set<String> partyArtworkPending = new HashSet<>();
 
     private View doorbellView;
     private ImageView doorbellImage;
@@ -165,14 +183,30 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
 
     private final Runnable liveStatePollTask = new Runnable() {
         @Override public void run() {
-            if (!overlayActive() || host == null) return;
+            if ((!overlayActive() && !partyFullscreen) || host == null) return;
             // The explicitly selected Home Assistant media_player is the
             // authoritative playback state. Direct Music Assistant data may
             // enrich title/artwork/queue metadata, but must never replace the
             // selected speaker's playing/paused state with the kiosk's own MA
             // player state.
             pollMediaEntity();
-            if (directMusicAssistantAvailable()) pollMusicAssistantQueue();
+            if (partyCompact || partyFullscreen) {
+                updateParty();
+                pollPartyQueue();
+            } else if (directMusicAssistantAvailable()) pollMusicAssistantQueue();
+            if (partyFullscreen) {
+                if (SystemClock.elapsedRealtime() - partyLastRenew > 10000) {
+                    partyLastRenew = SystemClock.elapsedRealtime();
+                    context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit()
+                            .putLong("party_until_ms", System.currentTimeMillis() + 30000).apply();
+                }
+                if (activeKioskActivity() != null && SystemClock.elapsedRealtime() - partyLastPostpone > 15000) {
+                    partyLastPostpone = SystemClock.elapsedRealtime();
+                    partyHostCommand("postponeScreensaver");
+                }
+                main.postDelayed(this, 1000);
+                return;
+            }
             if (doorbellView != null || cameraTestMode) pollCameraEntity();
             pollDoorbellTrigger(1);
             pollDoorbellTrigger(2);
@@ -234,6 +268,10 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             return;
         }
         this.windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        SharedPreferences presentation = context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE);
+        partyCompact = presentation.getBoolean("compact", false);
+        presentation.edit().putBoolean("party_fullscreen", false).apply();
+        context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
         if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(context)) {
             host.status("Grant Display over other apps to Kiosk Satellite.", true);
             return;
@@ -276,11 +314,34 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             main.removeCallbacks(forcePreviewTimeoutTask);
             main.postDelayed(forcePreviewTimeoutTask, 120000);
             main.post(this::updatePresentation);
+        } else if ("partyCompact".equals(command)) {
+            main.post(() -> {
+                closePartyFullscreen();
+                partyCompact = true;
+                context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("compact", true).apply();
+                forceOverlayPreview = true;
+                main.removeCallbacks(forcePreviewTimeoutTask);
+                main.postDelayed(forcePreviewTimeoutTask, 120000);
+                hideNowPlaying();
+                updatePresentation();
+            });
+        } else if ("partyFullscreen".equals(command)) {
+            main.post(this::openPartyFullscreen);
+        } else if ("partyOff".equals(command)) {
+            main.post(() -> {
+                closePartyFullscreen();
+                partyCompact = false;
+                context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE).edit().putBoolean("compact", false).apply();
+                removePartyView();
+                updatePresentation();
+            });
         } else if ("test".equals(command)) {
             main.post(this::showTestOverlay);
         } else if ("showCameraTest".equals(command)) {
             cameraTestMode = true;
             main.post(() -> {
+                closePartyFullscreen();
+                removePartyView();
                 if (overlayActive()) showDoorbell(true);
                 updatePresentation();
             });
@@ -293,6 +354,8 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             });
         } else if ("hide".equals(command)) {
             main.post(() -> {
+                closePartyFullscreen();
+                removePartyView();
                 forceOverlayPreview = false;
                 manualFotoo = false;
                 main.removeCallbacks(forcePreviewTimeoutTask);
@@ -408,6 +471,8 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
                 forceOverlayPreview = false;
                 manualFotoo = false;
                 dreaming = false;
+                closePartyFullscreen();
+                removePartyView();
                 hideDoorbellImmediate();
                 hideNowPlayingImmediate();
                 cleanupStaleOverlayWindows();
@@ -473,10 +538,13 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
                 manualFotoo = false;
                 forceOverlayPreview = false;
                 main.removeCallbacks(forcePreviewTimeoutTask);
-                if (changed) updatePresentation();
+                if (changed || partyFullscreen) updatePresentation();
             }
             @Override public void onActivityPaused(Activity activity) {
                 if (currentActivity == activity) currentActivity = null;
+                if (partyFullscreen && partyActivity == activity && !activity.isChangingConfigurations()) {
+                    main.post(() -> { closePartyFullscreen(); updatePresentation(); });
+                }
             }
             @Override public void onActivityStopped(Activity activity) {
                 if (currentActivity == activity) currentActivity = null;
@@ -616,6 +684,11 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             // Width/position are WindowManager layout parameters, so rebuild
             // the Now Playing window whenever settings are saved.
             if (nowPlayingView != null) hideNowPlaying();
+            partyGeneration++;
+            partyModel = null;
+            partyTarget = "";
+            partyLastSuccess = 0;
+            removePartyView();
             updatePresentation();
         });
     }
@@ -739,6 +812,7 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
      * overlay path that has always worked there.
      */
     private boolean preferInAppOverlay() {
+        if (partyFullscreen) return true;
         if (kioskScreensaverActiveForOverlay()) return true;
         return forceOverlayPreview && activeKioskActivity() != null;
     }
@@ -840,9 +914,17 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
 
     private void updatePresentation() {
         main.removeCallbacks(liveStatePollTask);
+        if (partyFullscreen) {
+            hideNowPlaying();
+            hideDoorbell();
+            ensurePartyView();
+            main.post(liveStatePollTask);
+            return;
+        }
         if (!overlayActive()) {
             hideDoorbell();
             hideNowPlaying();
+            removePartyView();
             return;
         }
 
@@ -858,11 +940,16 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
             pollCameraEntity();
         }
         pollMediaEntity();
-        if (directMusicAssistantAvailable()) pollMusicAssistantQueue();
+        if (!partyCompact && directMusicAssistantAvailable()) pollMusicAssistantQueue();
         updateNowPlaying();
     }
 
     private void updateNowPlaying() {
+        if (partyFullscreen || (partyCompact && overlayActive())) {
+            hideNowPlaying();
+            updateParty();
+            return;
+        }
         if (!overlayActive() || nowPlayingEntity.isEmpty() || !mediaVisible()) {
             hideNowPlaying();
             return;
@@ -931,6 +1018,242 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         if (!mediaFetchPending) fetchMediaImage(picture);
     }
 
+    private void openPartyFullscreen() {
+        if (context == null || host == null) return;
+        removePartyView();
+        partyFullscreen = true;
+        forceOverlayPreview = false;
+        main.removeCallbacks(forcePreviewTimeoutTask);
+        context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean("party_fullscreen", true)
+                .putLong("party_until_ms", System.currentTimeMillis() + 30000).apply();
+        context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
+        partyHostCommand("stopScreensaver");
+        partyHostCommand("hideNowPlaying");
+        partyHostCommand("hideOverlayPage");
+        if (activeKioskActivity() == null) {
+            Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                try { context.startActivity(launch); } catch (Throwable ignored) {}
+            }
+        }
+        updatePresentation();
+    }
+
+    private void closePartyFullscreen() {
+        boolean wasFullscreen = partyFullscreen;
+        partyFullscreen = false;
+        if (context != null) {
+            context.getSharedPreferences(PARTY_PREFS, Context.MODE_PRIVATE)
+                    .edit().putBoolean("party_fullscreen", false).putLong("party_until_ms", 0).apply();
+            if (wasFullscreen) context.sendBroadcast(new Intent(PARTY_EVENT).setPackage(context.getPackageName()));
+        }
+        if (wasFullscreen) removePartyView();
+    }
+
+    private void partyHostCommand(String command) {
+        if (host == null) return;
+        try { host.executeCommand(command, Collections.emptyMap(), (ok, data, error) -> {}); }
+        catch (Throwable ignored) {}
+    }
+
+    private void ensurePartyView() {
+        if (context == null || (!partyFullscreen && !overlayActive())) return;
+        Activity activity = activeKioskActivity();
+        if (partyFullscreen && activity == null) return;
+        if (partyRoot != null && partyFullscreen && partyActivity != activity) removePartyView();
+        if (partyRoot != null) return;
+        FrameLayout root = new FrameLayout(context);
+        root.setTag("now-playing-overlay:party");
+        root.setClickable(partyFullscreen);
+        root.setKeepScreenOn(partyFullscreen);
+        partyView = new PartyView(context, partyFullscreen);
+        root.addView(partyView, new FrameLayout.LayoutParams(-1, -1));
+        int width, height, gravity, offset;
+        if (partyFullscreen) {
+            TextView close = textView(24, true, Color.WHITE);
+            close.setText("×"); close.setGravity(Gravity.CENTER);
+            close.setContentDescription("Afslut Party Mode");
+            close.setBackground(cardBackground(0x99353539, 24));
+            FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP | Gravity.RIGHT);
+            cp.topMargin = dp(10); cp.rightMargin = dp(10);
+            root.addView(close, cp);
+            close.setOnClickListener(v -> { closePartyFullscreen(); updatePresentation(); });
+            width = -1; height = -1; gravity = Gravity.TOP | Gravity.LEFT; offset = 0;
+        } else {
+            int screenWidth = context.getResources().getDisplayMetrics().widthPixels;
+            width = Math.min(screenWidth - dp(16), Math.max(dp(260), screenWidth * nowPlayingWidthPercent / 100));
+            height = dp(216);
+            gravity = "Top".equals(nowPlayingPosition) ? Gravity.TOP | Gravity.CENTER_HORIZONTAL :
+                    "Center".equals(nowPlayingPosition) ? Gravity.CENTER : Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+            offset = "Center".equals(nowPlayingPosition) ? 0 : dp(nowPlayingOffset);
+            root.setAlpha(nowPlayingOpacity / 100f);
+        }
+        try {
+            if (!addOverlayView(root, width, height, gravity, offset, false)) throw new IllegalStateException("No kiosk view");
+            partyRoot = root;
+            partyActivity = partyFullscreen ? activity : null;
+        } catch (Throwable error) {
+            partyView = null;
+            if (host != null) host.status("Party view could not be shown.", true);
+        }
+    }
+
+    private void removePartyView() {
+        removeOverlayView(partyRoot);
+        partyRoot = null; partyView = null; partyActivity = null;
+    }
+
+    private void updateParty() {
+        if (!partyFullscreen && (!partyCompact || !overlayActive() || (!mediaVisible() && !forceOverlayPreview))) {
+            removePartyView(); return;
+        }
+        ensurePartyView();
+        if (partyView == null) return;
+        if (partyModel == null || SystemClock.elapsedRealtime() - partyLastSuccess > 8000) {
+            String title = attr(mediaAttributes, "media_title", "");
+            java.util.List<PartyQueueModel.Track> fallback = new java.util.ArrayList<>();
+            if (!title.isEmpty()) fallback.add(new PartyQueueModel.Track(mediaIdentity, title,
+                    attr(mediaAttributes, "media_artist", ""), attr(mediaAttributes, "entity_picture", ""), true));
+            PartyQueueModel model = new PartyQueueModel(fallback, estimatedMediaPosition(),
+                    numberAttr(mediaAttributes, "media_duration", 0), mediaState == null ? "" : mediaState);
+            partyView.setQueue(model, new HashMap<>(partyArtwork), "playing".equalsIgnoreCase(mediaState));
+            fetchPartyArtwork(model);
+        } else {
+            partyView.setQueue(partyModel, new HashMap<>(partyArtwork), "playing".equalsIgnoreCase(mediaState));
+        }
+        if (nowPlayingEntity.isEmpty()) partyView.setMessage("Vælg højttaler under Now Playing entity");
+        else if (maBaseUrl.isEmpty() || maToken.isEmpty()) partyView.setMessage("Tilslut Music Assistant i Kiosk for at vise hele køen");
+        else if (attr(mediaAttributes, "active_queue", "").isEmpty()) partyView.setMessage("Venter på Music Assistant-kø fra den valgte højttaler");
+    }
+
+    private void pollPartyQueue() {
+        if (partyView == null || partyPollPending || io == null || context == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (now - partyLastPoll < 2000) return;
+        partyLastPoll = now;
+        readKioskMusicAssistantConfig();
+        // HA's MA entity exposes the active queue, including grouped playback.
+        // Never substitute the kiosk Sendspin player or an unrelated active queue.
+        final String queueId = attr(mediaAttributes, "active_queue", "").trim();
+        if (queueId.isEmpty() || maBaseUrl.trim().isEmpty() || maToken.trim().isEmpty()) return;
+        if (!queueId.equals(partyTarget)) {
+            partyTarget = queueId; partyModel = null; partyLastSuccess = 0; partyGeneration++;
+        }
+        final long generation = partyGeneration;
+        final String entity = nowPlayingEntity;
+        final String base = maBaseUrl.trim().replaceFirst("^ws:", "http:").replaceFirst("^wss:", "https:").replaceAll("/+$", "");
+        final String token = maToken;
+        partyPollPending = true;
+        io.execute(() -> {
+            PartyQueueModel model = null;
+            try {
+                JSONObject args = new JSONObject(); args.put("queue_id", queueId);
+                Object result = partyRequest(base, token, "player_queues/get", args);
+                if (result instanceof JSONObject && queueId.equals(((JSONObject) result).optString("queue_id", ""))) {
+                    JSONObject queue = (JSONObject) result;
+                    JSONArray items = null;
+                    try {
+                        JSONObject itemArgs = new JSONObject();
+                        itemArgs.put("queue_id", queueId); itemArgs.put("offset", PartyQueueModel.offset(queue)); itemArgs.put("limit", 5);
+                        Object response = partyRequest(base, token, "player_queues/items", itemArgs);
+                        if (response instanceof JSONArray) items = (JSONArray) response;
+                    } catch (Throwable ignored) {}
+                    model = PartyQueueModel.parse(queue, items, base);
+                }
+            } catch (Throwable ignored) {}
+            final PartyQueueModel snapshot = model;
+            main.post(() -> {
+                partyPollPending = false;
+                if (host == null || generation != partyGeneration || !entity.equals(nowPlayingEntity) ||
+                        !queueId.equals(attr(mediaAttributes, "active_queue", ""))) return;
+                if (snapshot != null) {
+                    partyModel = snapshot; partyLastSuccess = SystemClock.elapsedRealtime();
+                    fetchPartyArtwork(snapshot);
+                }
+                updateParty();
+            });
+        });
+    }
+
+    private Object partyRequest(String base, String token, String command, JSONObject args) throws Exception {
+        URL url = new URL(base + "/api");
+        if (!("http".equals(url.getProtocol()) || "https".equals(url.getProtocol())) || url.getUserInfo() != null) return null;
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setInstanceFollowRedirects(false);
+        connection.setConnectTimeout(2500); connection.setReadTimeout(3500);
+        connection.setRequestMethod("POST"); connection.setDoOutput(true); connection.setUseCaches(false);
+        connection.setRequestProperty("Authorization", "Bearer " + token);
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        JSONObject request = new JSONObject(); request.put("message_id", "now-playing-party");
+        request.put("command", command); request.put("args", args);
+        byte[] body = request.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        connection.setFixedLengthStreamingMode(body.length);
+        try {
+            try (java.io.OutputStream output = connection.getOutputStream()) { output.write(body); }
+            if (connection.getResponseCode() != 200) return null;
+            try (InputStream stream = connection.getInputStream()) {
+                java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                byte[] chunk = new byte[4096]; int count;
+                while ((count = stream.read(chunk)) >= 0) {
+                    if (bytes.size() + count > 512 * 1024) throw new java.io.IOException("Queue response too large");
+                    bytes.write(chunk, 0, count);
+                }
+                Object response = new JSONTokener(bytes.toString("UTF-8")).nextValue();
+                return response instanceof JSONObject && ((JSONObject) response).has("result")
+                        ? ((JSONObject) response).opt("result") : response;
+            }
+        } finally { connection.disconnect(); }
+    }
+
+    private void fetchPartyArtwork(PartyQueueModel model) {
+        if (io == null) return;
+        for (PartyQueueModel.Track track : model.tracks) {
+            String path = track.artwork;
+            if (path.isEmpty() || partyArtwork.containsKey(path) || !partyArtworkPending.add(path)) continue;
+            final String resolved = resolveHaUrl(path);
+            final long generation = partyGeneration;
+            io.execute(() -> {
+                Bitmap cover = resolved == null ? null : fetchPartyBitmap(resolved);
+                main.post(() -> {
+                    partyArtworkPending.remove(path);
+                    if (host == null || generation != partyGeneration || cover == null) return;
+                    if (partyArtwork.size() >= 12) partyArtwork.clear();
+                    partyArtwork.put(path, cover);
+                    updateParty();
+                });
+            });
+        }
+    }
+
+    private Bitmap fetchPartyBitmap(String source) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(source);
+            if (!("http".equals(url.getProtocol()) || "https".equals(url.getProtocol()))) return null;
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(2500); connection.setReadTimeout(3500);
+            try (InputStream stream = connection.getInputStream()) {
+                java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                byte[] chunk = new byte[4096]; int count;
+                while ((count = stream.read(chunk)) >= 0) {
+                    if (bytes.size() + count > 4 * 1024 * 1024) return null;
+                    bytes.write(chunk, 0, count);
+                }
+                byte[] data = bytes.toByteArray();
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
+                BitmapFactory.Options decode = new BitmapFactory.Options();
+                decode.inSampleSize = 1;
+                while (Math.max(bounds.outWidth, bounds.outHeight) / decode.inSampleSize > 512) decode.inSampleSize *= 2;
+                return BitmapFactory.decodeByteArray(data, 0, data.length, decode);
+            }
+        } catch (Throwable ignored) { return null; }
+        finally { if (connection != null) connection.disconnect(); }
+    }
+
     private void updateProgress() {
         if (mediaProgress == null || mediaTime == null) return;
 
@@ -995,6 +1318,9 @@ public final class NowPlayingOverlayPlugin implements KioskPlugin {
         mediaIdentity = identity;
         lastMediaPositionAttr = positionAttr;
         mediaState = state;
+        if (!Objects.equals(attr(mediaAttributes, "active_queue", ""), attr(attrs, "active_queue", ""))) {
+            partyModel = null; partyLastSuccess = 0; partyTarget = ""; partyGeneration++;
+        }
         mediaAttributes = attrs == null ? Collections.emptyMap() : attrs;
         main.post(this::updateNowPlaying);
     }

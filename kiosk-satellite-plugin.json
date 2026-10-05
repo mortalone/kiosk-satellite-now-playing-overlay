@@ -3,15 +3,16 @@
   "apiVersion": 1,
   "id": "now-playing-overlay",
   "name": "Now Playing Overlay",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAndroidSdk": 26,
   "entryClass": "me.jxl.kiosk.plugins.nowplayingoverlay.NowPlayingOverlayPlugin",
-  "description": "Native Now Playing overlay for Kiosk Satellite screensavers and Fotoo, with stable Home Assistant artwork and Music Assistant metadata enrichment.",
+  "description": "Native Now Playing and Party queue presentation for Kiosk Satellite and Fotoo, including a compact queue overlay and a dedicated full-screen Party Mode.",
   "author": "Local Kiosk Satellite project",
   "license": "MIT",
   "capabilities": [
     "overlay",
-    "host.read"
+    "host.read",
+    "host.control"
   ],
   "settings": [
     {
@@ -190,6 +191,18 @@
     {
       "id": "hide",
       "title": "Hide Now Playing"
+    },
+    {
+      "id": "partyCompact",
+      "title": "Party Mode: compact overlay (saved)"
+    },
+    {
+      "id": "partyFullscreen",
+      "title": "Party Mode: open full screen in Kiosk"
+    },
+    {
+      "id": "partyOff",
+      "title": "Party Mode: use standard Now Playing"
     }
   ],
   "groups": [
