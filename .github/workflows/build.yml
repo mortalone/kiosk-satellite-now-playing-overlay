@@ -20,11 +20,8 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android platform
-        run: sdkmanager "platforms;android-35"
+        run: yes | sdkmanager "platforms;android-35" >/dev/null
 
       - name: Build plugin
         run: python3 tools/build.py --android-platform 35
