@@ -11,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +24,9 @@ jobs:
           java-version: "17"
 
       - name: Install Android platform
-        run: yes | sdkmanager "platforms;android-35" >/dev/null
+        run: |
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -1)
+          yes | "$SDKMANAGER" "platforms;android-35" >/dev/null
 
       - name: Build plugin
         run: python3 tools/build.py --android-platform 35
